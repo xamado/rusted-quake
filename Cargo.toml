@@ -6,3 +6,7 @@ edition = "2021"
 [dependencies]
 glam = "0.29.2"
 minifb = "0.28.0"
+minifb_fonts = "0.1"
+
+[profile.release]
+debug = true

@@ -14,8 +14,8 @@ impl Camera {
             position: Vec3::ZERO,
             aspect: 0.0,
             fov: 70.0,
-            znear: 0.01,
-            zfar: 1000.0
+            znear: 1.0,
+            zfar: 10000.0
         }
     }
 
@@ -42,7 +42,7 @@ impl Camera {
         //     Vec4::new(0.0, 0.0, zf / (zf - zn), 1.0),
         //     Vec4::new(0.0, 0.0, (-zn * zf) / (zf - zn),  0.0),
         // )
-        
+
         let (sin_fov, cos_fov) = f32::sin_cos(0.5 * self.fov.to_radians());
         let h = cos_fov / sin_fov;
         let w = h / self.aspect;

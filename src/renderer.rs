@@ -48,6 +48,10 @@ impl Renderer {
         &self.back_buffer
     }
 
+    pub fn get_depth_buffer(&self) -> &[f32] {
+        &self.depth_buffer
+    }
+
     pub fn draw(&mut self, vertex_buffer: &Vec<Vec3>, index_buffer: &Vec<u32>, w: &Mat4, wvp: &Mat4) {
         // draw indices as triangles, grab triples at a time
         for tri in index_buffer.chunks_exact(3) {
@@ -57,7 +61,7 @@ impl Renderer {
             let p0: Vec3 = vertex_buffer[tri[0] as usize];
             let p1: Vec3 = vertex_buffer[tri[1] as usize];
             let p2: Vec3 = vertex_buffer[tri[2] as usize];
-            let normal = ((p1 - p0).cross(p2 - p0)).normalize();
+            let normal = (p1 - p0).cross(p2 - p0).normalize();
 
             let mut visible = false;
             let mut clipped = false;
@@ -66,6 +70,7 @@ impl Renderer {
                 let obj_position: Vec3 = vertex_buffer[tri[i] as usize];
                 let obj_normal: Vec3 = normal;
 
+                // clip space transformation
                 let obj_position_4d = obj_position.extend(1.0);
                 let clip = wvp.mul_vec4(obj_position_4d);
 
@@ -74,9 +79,7 @@ impl Renderer {
                     continue;
                 }
 
-                // let ndc = wvp.project_point3(obj_position);
-
-                // perspective divide to go from clip->NDC
+                // NDC transformation -> perspective divide to go from clip->NDC
                 let ndc = clip.truncate() / clip.w;
 
                 if !visible && ndc.x > -1.0 && ndc.x < 1.0 && ndc.y > -1.0 && ndc.y < 1.0 {
@@ -86,11 +89,14 @@ impl Renderer {
                 let w_position = w.transform_point3(obj_position);
                 let w_normal = w.transform_vector3(obj_normal); // leaving this here since in theory this should be different per-vertex and come from the 3d mesh
 
+                // viewport transformation
                 let p_screen = Vec3::new(
-                    ((ndc.x + 1.0) * 0.5 * self.screen_width as f32),
-                    ((1.0 - ndc.y) * 0.5 * self.screen_height as f32),
+                    (ndc.x + 1.0) * 0.5 * self.screen_width as f32,
+                    (1.0 - ndc.y) * 0.5 * self.screen_height as f32,
                     ndc.z
                 );
+
+                // println!("screen: {:?}", p_screen);
 
                 // println!("{:?}", p_screen);
 
@@ -108,7 +114,7 @@ impl Renderer {
             }
 
             // self.rasterize_triangle(vertices[0], vertices[1], vertices[2]);
-            self.rasterize_triangle(vertices[2], vertices[1], vertices[0]);
+            self.rasterize_triangle(&vertices[2], &vertices[1], &vertices[0]);
         }
     }
 
@@ -125,12 +131,14 @@ impl Renderer {
         c.to_u32()
     }
 
-    fn orient2d(a: Vec3, b: Vec3, c: Vec3) -> f32 {
+    fn orient2d(v0: Vec3, v1: Vec3, p: Vec3) -> f32 {
         // (b.x - a.x) as i32 * (c.y - a.y as i32) - (b.y - a.y) as i32 * (c.x - a.x as i32)
-        (c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)
+        // (c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)
+
+        (v1.x - v0.x) * (p.y - v0.y) - (v1.y - v0.y) * (p.x - v0.x) // this is how https://fgiesen.wordpress.com/2013/02/06/the-barycentric-conspirac/ does it
     }
 
-    fn rasterize_triangle(&mut self, v0: Vertex, v1: Vertex, v2: Vertex) {
+    fn rasterize_triangle(&mut self, v0: &Vertex, v1: &Vertex, v2: &Vertex) {
         // compute bounding box
         let mut min_x: i32 = v0.screen_position.x.min(v1.screen_position.x).min(v2.screen_position.x) as i32;
         let mut min_y: i32 = v0.screen_position.y.min(v1.screen_position.y).min(v2.screen_position.y) as i32;
@@ -143,25 +151,57 @@ impl Renderer {
         max_x = max_x.min(self.screen_width as i32 - 1);
         max_y = max_y.min(self.screen_height as i32 - 1);
 
+        // calculate the area of the triangle (2x)
         let area: f32 = Self::orient2d(v0.screen_position, v1.screen_position, v2.screen_position);
+        if area < 0.0 { // negative area means it's a back-facing triangle
+            return;
+        }
+
+        // pre-calculate the barycentric for the first pixel in the grid
+        let p_min = Vec3::new(min_x as f32 + 0.5, min_y as f32 + 0.5, 0.0);
+        let mut w0_min = Self::orient2d(v1.screen_position, v2.screen_position, p_min);
+        let mut w1_min = Self::orient2d(v2.screen_position, v0.screen_position, p_min);
+        let mut w2_min = Self::orient2d(v0.screen_position, v1.screen_position, p_min);
+
+        // and calculate steps needed to move the barycentric coordinates
+        let w0_stepx = v1.screen_position.y - v2.screen_position.y;
+        let w0_stepy = v2.screen_position.x - v1.screen_position.x;
+        let w1_stepx = v2.screen_position.y - v0.screen_position.y;
+        let w1_stepy = v0.screen_position.x - v2.screen_position.x;
+        let w2_stepx = v0.screen_position.y - v1.screen_position.y;
+        let w2_stepy = v1.screen_position.x - v0.screen_position.x;
 
         for y in min_y..=max_y {
+            // initialize barycentric coords
+            let mut w0 = w0_min;
+            let mut w1 = w1_min;
+            let mut w2 = w2_min;
+
             for x in min_x..=max_x {
                 let p = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, 0.0);
 
                 // determine barycentric coordinates for this pixel
-                let w0 = Self::orient2d(v1.screen_position, v2.screen_position, p) / area;
-                let w1 = Self::orient2d(v2.screen_position, v0.screen_position, p) / area;
-                let w2 = Self::orient2d(v0.screen_position, v1.screen_position, p) / area;
+                // let bw0 = Self::orient2d(v1.screen_position, v2.screen_position, p);
+                // let bw1 = Self::orient2d(v2.screen_position, v0.screen_position, p);
+                // let bw2 = Self::orient2d(v0.screen_position, v1.screen_position, p);
 
-                // let weight = w0 + w1 + w2;
-
-                let interpolated_screen = (w0 * v0.screen_position + w1 * v1.screen_position + w2 * v2.screen_position);
-                let interpolated_position = (w0 * v0.position + w1 * v1.position + w2 * v2.position);
-                let interpolated_normal = (w0 * v0.normal + w1 * v1.normal + w2 * v2.normal);
-
+                // skip if outside the triangle
                 if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+                //if ((w0 | w1 | w2) >= 0) {
                     let pixel_index: usize = p.y as usize * self.screen_width + p.x as usize;
+
+                    // normalize our lambdas
+                    let l0 = w0 / area;
+                    let l1 = w1 / area;
+                    let l2 = w2 / area;
+
+                    // calculate perspective-correct depth
+                    let inv_z = (1.0 / v0.screen_position.z) * l0 + (1.0 / v1.screen_position.z) * l1 + (1.0 / v2.screen_position.z) * l2;
+                    let pixel_z = 1.0 / inv_z;
+
+                    let interpolated_screen: Vec3 = Vec3::new(p.x, p.y, pixel_z);
+                    let interpolated_position = (l0 * v0.position + l1 * v1.position + l2 * v2.position);
+                    let interpolated_normal = (l0 * v0.normal + l1 * v1.normal + l2 * v2.normal);
 
                     // now we need to calculate the interpolated vertex attributes... fun!
                     let v: Vertex = Vertex {
@@ -170,18 +210,28 @@ impl Renderer {
                         normal: interpolated_normal,
                     };
 
-                    // let zbuffer_value = self.depth_buffer[pixel_index];
-                    // if interpolated_position.z <= zbuffer_value {
-                    //     continue;
-                    // }
+                    let zbuffer_value = self.depth_buffer[pixel_index];
+                    if pixel_z > zbuffer_value {
+                        continue;
+                    }
 
                     // run the "pixel shader" for this pixel
                     let c = Self::pixel_shader(v);
 
                     self.back_buffer[pixel_index] = c;
-                    self.depth_buffer[pixel_index] = interpolated_position.z;
+                    self.depth_buffer[pixel_index] = pixel_z;
                 }
+
+                // take a step to the right
+                w0 += w0_stepx;
+                w1 += w1_stepx;
+                w2 += w2_stepx;
             }
+
+            // and a step down
+            w0_min += w0_stepy;
+            w1_min += w1_stepy;
+            w2_min += w2_stepy;
         }
     }
 }

@@ -176,13 +176,8 @@ impl Level {
     pub fn draw(&self, w: &Mat4, wvp: &Mat4, position: Vec3, renderer: &mut Renderer) {
         // let leaf = self.find_leaf(0, position);
 
-        let mut count = 0;
-
         self.bsp_leafs.iter().for_each(|leaf| {
-            count += 1;
-            if count < 500 {
-                self.render_leaf(leaf, &w, &wvp, renderer);
-            }
+            self.render_leaf(leaf, &w, &wvp, renderer);
         });
 
         //self.render_leaf(leaf, &w, &wvp, renderer);
