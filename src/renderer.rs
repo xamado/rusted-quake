@@ -141,7 +141,7 @@ impl Renderer {
     }
 
     fn pixel_shader(v: Vertex) -> u32 {
-        let light_dir = Vec3::new(0.0, -1.0, -1.0);
+        // let light_dir = Vec3::new(0.0, -1.0, -1.0);
 
         // let intensity = v.normal.dot(light_dir);
 
