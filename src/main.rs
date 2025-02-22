@@ -153,7 +153,7 @@ fn main() {
         if draw_depth {
             let depth: &[f32] = renderer.get_depth_buffer();
             buffer = depth.iter()
-                .map(|&x| (float_to_u32_color(x) as u32))
+                .map(|&x| (float_to_u32_color(x)))
                 .collect();
         }
         else {
@@ -169,6 +169,13 @@ fn main() {
         text.draw_text(&mut buffer, 10, 20, text_frame_time.as_str());
         let text_camera_position = format!("camera: {}", camera.position);
         text.draw_text(&mut buffer, 10, 40, text_camera_position.as_str());
+
+        let stats = renderer.get_stats();
+        let str_stats = format!("{:#?}", stats) // Pretty-prints with new lines
+            .trim_start_matches("RendererStats {\n") // Remove struct name
+            .trim_end_matches("\n}") // Remove closing brace
+            .replace("    ", ""); // Remove excess indentation
+        text.draw_text(&mut buffer, 10, 80, str_stats.as_str());
 
         window
             .update_with_buffer(buffer.as_slice(), SCREEN_WIDTH, SCREEN_HEIGHT)

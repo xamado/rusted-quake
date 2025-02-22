@@ -19,13 +19,6 @@ impl Camera {
         }
     }
 
-    //  Mat4::perspective_lh(
-    //     self.fov.to_radians(),
-    //     self.aspect,
-    //     self.znear,
-    //     self.zfar
-    // )
-
     pub fn get_view_mat(&self) -> Mat4 {
         Mat4::look_to_rh(
             self.position,
@@ -35,14 +28,6 @@ impl Camera {
     }
 
     pub fn get_projection_mat(&self) -> Mat4 {
-
-        // Mat4::from_cols(
-        //     Vec4::new(w,  0.0,  0.0,  0.0),
-        //     Vec4::new(0.0, h,  0.0,  0.0),
-        //     Vec4::new(0.0, 0.0, zf / (zf - zn), 1.0),
-        //     Vec4::new(0.0, 0.0, (-zn * zf) / (zf - zn),  0.0),
-        // )
-
         let (sin_fov, cos_fov) = f32::sin_cos(0.5 * self.fov.to_radians());
         let h = cos_fov / sin_fov;
         let w = h / self.aspect;
