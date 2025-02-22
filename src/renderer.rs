@@ -1,6 +1,5 @@
-use glam::{IVec2, Mat4, Vec2, Vec3};
 use crate::color::Color;
-use crate::model::Model;
+use glam::{IVec2, Mat4, Vec3};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Vertex {
@@ -144,7 +143,7 @@ impl Renderer {
     fn pixel_shader(v: Vertex) -> u32 {
         let light_dir = Vec3::new(0.0, -1.0, -1.0);
 
-        let intensity = v.normal.dot(light_dir);
+        // let intensity = v.normal.dot(light_dir);
 
         // let c: Color = Color::from_f32(1.0 * intensity, 1.0 * intensity, 1.0 * intensity, 1.0 * intensity);
 
@@ -163,7 +162,7 @@ impl Renderer {
 
     fn rasterize_triangle(&mut self, v0: &Vertex, v1: &Vertex, v2: &Vertex) {
         self.stats.rasterizer_input += 1;
-        
+
         // compute bounding box
         let mut min_x: i32 = v0.screen_position.x.min(v1.screen_position.x).min(v2.screen_position.x) as i32;
         let mut min_y: i32 = v0.screen_position.y.min(v1.screen_position.y).min(v2.screen_position.y) as i32;

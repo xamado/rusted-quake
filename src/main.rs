@@ -4,15 +4,15 @@ mod camera;
 mod color;
 mod renderer;
 
-use std::time::Instant;
+use crate::color::Color;
 use crate::level::Level;
 use crate::renderer::Renderer;
 use camera::Camera;
 use glam::{Mat4, Quat, Vec3};
-use minifb::{Key, Scale, Window, WindowOptions};
-use minifb_fonts::{font5x8, font6x8};
+use minifb::{Key, Window, WindowOptions};
+use minifb_fonts::font6x8;
 use model::Model;
-use crate::color::Color;
+use std::time::Instant;
 
 const SCREEN_WIDTH: usize = 1920;
 const SCREEN_HEIGHT: usize = 1080;
