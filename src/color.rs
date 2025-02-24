@@ -32,10 +32,7 @@ impl Color {
     }
 
     pub fn to_u32(&self) -> u32 {
-        let r = (self.rgba.x * 255.0).round() as u32;
-        let g = (self.rgba.y * 255.0).round() as u32;
-        let b = (self.rgba.z * 255.0).round() as u32;
-        let a = (self.rgba.w * 255.0).round() as u32;
-        (a << 24) | (r << 16) | (g << 8) | b
+        let scaled = self.rgba * 255.0;
+        ((scaled.w as u32) << 24) | ((scaled.x as u32) << 16) | ((scaled.y as u32) << 8) | scaled.z as u32
     }
 }

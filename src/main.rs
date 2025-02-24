@@ -124,7 +124,7 @@ fn main() {
 
     // load our test obj file
     let model = Model::load("data/teapot.obj").expect("Failed to load model");
-    let level = Level::load("data/start.bsp").expect("Failed to load level");
+    let level = Level::load("data/e1m1.bsp").expect("Failed to load level");
 
 
     let mut settings = GameSettings {
