@@ -128,7 +128,7 @@ pub struct Level {
     bsp_edges: Vec<BSPEdge>,
     bsp_ledges: Vec<i32>,
     vertices: Vec<Vec3>,
-
+    vislist: Vec<u8>,
 }
 
 
@@ -158,6 +158,8 @@ impl Level {
 
         let vertices: Vec<Vec3> = Self::read_lump(&mut file, &bsp_header.vertices).expect("Failed to read vertices");
 
+        let vislist: Vec<u8> = Self::read_lump(&mut file, &bsp_header.vislist).expect("Failed to read vislist");
+
         // let entities = Self::read_entities(&mut file, &bsp_header.entities).expect("Failed to read entities");
 
         Ok(Self {
@@ -170,17 +172,56 @@ impl Level {
             bsp_edges: bsp_edges,
             bsp_ledges: list_edges,
             vertices: vertices,
+            vislist: vislist,
         })
     }
 
     pub fn draw(&self, w: &Mat4, wvp: &Mat4, position: Vec3, renderer: &mut Renderer) {
-        // let leaf = self.find_leaf(0, position);
+        // TODO: This potentially can be skipped unless the player moves to another leaf
 
-        self.bsp_leafs.iter().for_each(|leaf| {
+        let leaf = self.find_leaf(0, position);
+
+        let mut visible_leafs: Vec<usize> = vec![];
+
+        let num_leaves = self.bsp_leafs.len();
+
+        // leaf.vislist marks the offset where the visibility list for this leaf starts
+        let mut v = leaf.vislist as usize;
+
+        let mut l = 1;
+        while l < num_leaves
+        {
+            if self.vislist[v] == 0
+            {
+                // if we read a 0, the next byte tells us how many bytes to skip (RLE)
+                // each bit represents a leaf, so we skip that amount of leaf indices (L)
+                l += 8 * self.vislist[v + 1] as usize;
+                v += 1;
+            }
+            else
+            {
+                // tag the 8 leafs in this byte
+                for bit in 0..=7 {
+                    if self.vislist[v] & (1u8 << bit) != 0 {
+                        if l < num_leaves {
+                            visible_leafs.push(l);
+                        }
+                    }
+                    l += 1;
+                }
+            }
+
+            v += 1;
+        }
+
+        // self.bsp_leafs.iter().for_each(|leaf| {
+        //     self.render_leaf(leaf, &w, &wvp, renderer);
+        // });
+
+        visible_leafs.iter().for_each(|l| {
+            let leaf = &self.bsp_leafs[*l];
             self.render_leaf(leaf, &w, &wvp, renderer);
         });
-
-        //self.render_leaf(leaf, &w, &wvp, renderer);
     }
 
     fn read_lump<T>(file: &mut File, lump: &BSPLump) -> io::Result<Vec<T>> {
@@ -240,16 +281,9 @@ impl Level {
     }
 
     fn render_leaf(&self, leaf: &BSPLeaf, w: &Mat4, wvp: &Mat4, renderer: &mut Renderer) {
-        // println!("numfaces {:?}", leaf.lface_num);
-
-        let mut leaf_vertices : Vec<Vec3> = Vec::new();
-        let mut leaf_indices : Vec<u32> = Vec::new();
-
         for face_list_index in leaf.lface_id..(leaf.lface_id + leaf.lface_num) {
             let face_index: u16 = self.bsp_lfaces[face_list_index as usize];
             let face: &BSPFace = &self.bsp_faces[face_index as usize];
-
-            // println!("draw face {:?}", face_index);
 
             let mut face_vertices : Vec<Vec3> = Vec::new();
             let mut face_indices : Vec<u32> = Vec::new();
@@ -269,7 +303,6 @@ impl Level {
                     let edge = &self.bsp_edges[-edge_index as usize];
                     let v0 = self.vertices[edge.vertex1 as usize];
                     let v1 = self.vertices[edge.vertex0 as usize];
-                    // println!("v0 {:?} v1 {:?}", v0, v1);
 
                     face_vertices.push(v0);
                 }
@@ -278,8 +311,8 @@ impl Level {
             for i in 2..face_vertices.len() {
                 face_indices.push(0);
 
-                face_indices.push((i - 1) as u32);
                 face_indices.push(i as u32);
+                face_indices.push((i - 1) as u32);
             }
 
             renderer.draw(&face_vertices, &face_indices, w, wvp);

@@ -23,11 +23,32 @@ pub struct RendererStats {
     pixels_drawn: u32,
     triangles_input: u32,
     rasterizer_input: u32,
+    pub debug_values: Vec<(String, String)>,
 }
 
 impl RendererStats {
     pub fn clear(&mut self) {
         *self = Self::default();
+    }
+
+    pub fn push_stat(&mut self, key: &str, value: &str) {
+        self.debug_values.push((key.to_string(), value.to_string()));
+    }
+}
+
+pub struct RendererSettings {
+    pub naive_rasterization: bool,
+    pub tile_size: i32,
+    pub wireframe: bool,
+}
+
+impl Default for RendererSettings {
+    fn default() -> Self {
+        Self {
+            naive_rasterization: false,
+            tile_size: 16,
+            wireframe: false,
+        }
     }
 }
 
@@ -37,6 +58,7 @@ pub struct Renderer {
     back_buffer: Vec<u32>,
     depth_buffer: Vec<f32>,
     stats: RendererStats,
+    settings: RendererSettings,
 }
 
 impl Renderer {
@@ -50,6 +72,8 @@ impl Renderer {
             back_buffer,
             depth_buffer,
             stats: RendererStats::default()
+            stats: RendererStats::default(),
+            settings,
         }
     }
 
@@ -63,6 +87,8 @@ impl Renderer {
     pub fn get_stats(&self) -> &RendererStats {
         &self.stats
     }
+
+    pub fn get_settings(&self) -> &RendererSettings { &self.settings }
 
     pub fn get_back_buffer(&self) -> &[u32] {
         &self.back_buffer
