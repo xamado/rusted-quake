@@ -9,6 +9,7 @@ pub struct Vertex {
     normal: Vec3,
 }
 
+#[derive(Copy, Clone, Debug)]
 pub struct VertexOutput {
     position: Vec4,
     normal: Vec3,
@@ -136,6 +137,50 @@ impl Renderer {
         output
     }
 
+    fn clip_edge(v1: &VertexOutput, v2: &VertexOutput) -> VertexOutput {
+        let t = (- (v1.position.w + v1.position.z)) / ((v2.position.w + v2.position.z) - (v1.position.w + v1.position.z));
+        VertexOutput {
+            position: v1.position + t * (v2.position - v1.position),
+            normal: v1.normal + t * (v2.normal - v1.normal),
+            screen_position: v1.screen_position + t * (v2.screen_position - v1.screen_position),
+            world_position: v1.world_position + t * (v2.world_position - v1.world_position),
+        }
+    }
+
+    fn clip_triangle(&self, v0: &VertexOutput, v1: &VertexOutput, v2: &VertexOutput) -> Vec<[VertexOutput; 3]> {
+        let mut inside = vec![];
+        let mut outside = vec![];
+
+        for v in [v0,v1,v2] {
+            if v.position.w + v.position.z >= 0.0 {
+                inside.push(*v); // copy
+            }
+            else {
+                outside.push(*v); // copy
+            }
+        }
+
+        match inside.len() {
+            3 => { // fully inside
+                vec![[*v0, *v1, *v2]]
+            }
+            2 => {
+                let new1 = Self::clip_edge(&inside[0], &outside[0]);
+                let new2 = Self::clip_edge(&inside[1], &outside[0]);
+                vec![
+                    [inside[0], inside[1], new1],
+                    [inside[1], new1, new2]
+                ]
+            }
+            1 => {
+                let new1 = Self::clip_edge(&inside[0], &outside[0]);
+                let new2 = Self::clip_edge(&inside[0], &outside[1]);
+                vec![[inside[0], new1, new2]]
+            }
+            _ => vec![]
+        }
+    }
+
     pub fn draw(&mut self, vertex_buffer_positions: &Vec<Vec3>, index_buffer: &Vec<u32>, w: &Mat4, wvp: &Mat4) {
         // TEMP: Generate our Vertex vertex_buffer here
         let mut vertex_buffer: Vec<Vertex> = vec![Vertex::default(); vertex_buffer_positions.len()];
@@ -167,84 +212,103 @@ impl Renderer {
         for tri in index_buffer.chunks_exact(3) {
             self.stats.triangles_input += 1;
 
-            let v0 = &vertex_buffer_clip[tri[0] as usize];
-            let v1 = &vertex_buffer_clip[tri[1] as usize];
-            let v2 = &vertex_buffer_clip[tri[2] as usize];
+            let clip_v0 = &vertex_buffer_clip[tri[0] as usize];
+            let clip_v1 = &vertex_buffer_clip[tri[1] as usize];
+            let clip_v2 = &vertex_buffer_clip[tri[2] as usize];
 
-            let normal = (v1.world_position - v0.world_position).cross(v2.world_position - v0.world_position).normalize();
+            // clip input triangles, output could be 1 or 2 triangles
+            let triangles = self.clip_triangle(clip_v0, clip_v1, clip_v2);
 
-            // clip when the vertex falls behind the near plane
-            if v0.position.w + v0.position.z < 0.0 || v1.position.w + v1.position.z < 0.0 || v2.position.w + v2.position.z < 0.0 {
-                continue; // clipped
-            }
+            for triangle_verts in triangles {
+                // let normal = (triangle_verts[1].world_position - triangle_verts[0].world_position)
+                //     .cross(triangle_verts[2].world_position - triangle_verts[0].world_position)
+                //     .normalize();
+                //
+                // let ndc: Vec<Vec4> = triangle_verts.iter()
+                //     .map(|v| v.position / v.position.w)
+                //     .collect();
+                //
+                // let screen: Vec<Vec3> =
 
-            let v0_ndc = v0.position / v0.position.w;
-            let v1_ndc = v1.position / v1.position.w;
-            let v2_ndc = v2.position / v2.position.w;
+                let v0 = &triangle_verts[0];
+                let v1 = &triangle_verts[1];
+                let v2 = &triangle_verts[2];
 
-            // ignore this clipping, we will rasterize anyway, just use guard bands to prevent overflow
-            // if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 {
-            //     clipped |= 1 << i;
-            // }
+                let normal = (v1.world_position - v0.world_position).cross(v2.world_position - v0.world_position).normalize();
 
-            // viewport transformation
-            let v0_screen = vec3(
-                (v0_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
-                (1.0 - v0_ndc.y) * 0.5 * self.screen_height as f32,
-                v0_ndc.z
-            );
+                // clip when the vertex falls behind the near plane
+                if v0.position.w + v0.position.z < 0.0 || v1.position.w + v1.position.z < 0.0 || v2.position.w + v2.position.z < 0.0 {
+                    continue; // clipped
+                }
 
-            let v1_screen = vec3(
-                (v1_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
-                (1.0 - v1_ndc.y) * 0.5 * self.screen_height as f32,
-                v1_ndc.z
-            );
+                let v0_ndc = v0.position / v0.position.w;
+                let v1_ndc = v1.position / v1.position.w;
+                let v2_ndc = v2.position / v2.position.w;
 
-            let v2_screen = vec3(
-                (v2_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
-                (1.0 - v2_ndc.y) * 0.5 * self.screen_height as f32,
-                v2_ndc.z
-            );
+                // ignore this clipping, we will rasterize anyway, just use guard bands to prevent overflow
+                // if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 {
+                //     clipped |= 1 << i;
+                // }
 
-            // guard-band clipping
-            let guardband = 8192.0 * 4.0;
-            if v0_screen.x < -guardband || v0_screen.x > guardband || v0_screen.y < -guardband || v0_screen.y > guardband {
-                continue; // clipped
-            }
-            if v1_screen.x < -guardband || v1_screen.x > guardband || v1_screen.y < -guardband || v1_screen.y > guardband {
-                continue; // clipped
-            }
-            if v2_screen.x < -guardband || v2_screen.x > guardband || v2_screen.y < -guardband || v2_screen.y > guardband {
-                continue; // clipped
-            }
+                // viewport transformation
+                let v0_screen = vec3(
+                    (v0_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
+                    (1.0 - v0_ndc.y) * 0.5 * self.screen_height as f32,
+                    v0_ndc.z
+                );
 
-            let v0_rasterizer = VertexOutput {
-                position: v0.position,
-                normal: normal,
-                screen_position: v0_screen,
-                world_position: v0.world_position,
-            };
+                let v1_screen = vec3(
+                    (v1_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
+                    (1.0 - v1_ndc.y) * 0.5 * self.screen_height as f32,
+                    v1_ndc.z
+                );
 
-            let v1_rasterizer = VertexOutput {
-                position: v1.position,
-                normal: normal,
-                screen_position: v1_screen,
-                world_position: v1.world_position,
-            };
+                let v2_screen = vec3(
+                    (v2_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
+                    (1.0 - v2_ndc.y) * 0.5 * self.screen_height as f32,
+                    v2_ndc.z
+                );
 
-            let v2_rasterizer = VertexOutput {
-                position: v2.position,
-                normal: normal,
-                screen_position: v2_screen,
-                world_position: v2.world_position,
-            };
+                // guard-band clipping
+                let guardband = 8192.0 * 4.0;
+                if v0_screen.x < -guardband || v0_screen.x > guardband || v0_screen.y < -guardband || v0_screen.y > guardband {
+                    continue; // clipped
+                }
+                if v1_screen.x < -guardband || v1_screen.x > guardband || v1_screen.y < -guardband || v1_screen.y > guardband {
+                    continue; // clipped
+                }
+                if v2_screen.x < -guardband || v2_screen.x > guardband || v2_screen.y < -guardband || v2_screen.y > guardband {
+                    continue; // clipped
+                }
 
-            // Send to the rasterizer
-            if self.settings.naive_rasterization {
-                self.rasterize_triangle_naive(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer);
-            }
-            else {
-                self.rasterize_triangle(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer);
+                let v0_rasterizer = VertexOutput {
+                    position: v0.position,
+                    normal: normal,
+                    screen_position: v0_screen,
+                    world_position: v0.world_position,
+                };
+
+                let v1_rasterizer = VertexOutput {
+                    position: v1.position,
+                    normal: normal,
+                    screen_position: v1_screen,
+                    world_position: v1.world_position,
+                };
+
+                let v2_rasterizer = VertexOutput {
+                    position: v2.position,
+                    normal: normal,
+                    screen_position: v2_screen,
+                    world_position: v2.world_position,
+                };
+
+                // Send to the rasterizer
+                if self.settings.naive_rasterization {
+                    self.rasterize_triangle_naive(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer);
+                }
+                else {
+                    self.rasterize_triangle(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer);
+                }
             }
         }
     }
@@ -290,7 +354,6 @@ impl Renderer {
         min_y = min_y.max(0);
         max_x = max_x.min(self.screen_width as i32 - 1);
         max_y = max_y.min(self.screen_height as i32 - 1);
-
 
         // pre-calculate the area for the first pixel in the grid
         let p_min = IVec2::new(min_x, min_y);

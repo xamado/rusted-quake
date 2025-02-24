@@ -123,7 +123,7 @@ fn main() {
     let mut renderer = Renderer::new(SCREEN_WIDTH, SCREEN_HEIGHT, renderer_settings);
 
     // load our test obj file
-    let model = Model::load("data/teapot.obj").expect("Failed to load model");
+    let model = Model::load("data/plane.obj").expect("Failed to load model");
     let level = Level::load("data/e1m1.bsp").expect("Failed to load level");
 
 
@@ -179,10 +179,11 @@ fn main() {
         let proj = camera.get_projection_mat();
 
         {
-            model_angle += 0.1 * elapsed_seconds;
+            // model_angle += 0.1 * elapsed_seconds;
             let world = Mat4::from_scale_rotation_translation(
                 Vec3::new(10.0, 10.0, 10.0),
-                Quat::from_euler(EulerRot::ZYX, model_angle,0.0,90.0f32.to_radians()),
+                Quat::IDENTITY,
+                // Quat::from_euler(EulerRot::ZYX, model_angle,0.0,90.0f32.to_radians()),
                 Vec3::new(0.0, 0.0, 0.0)
             );
 
@@ -203,7 +204,7 @@ fn main() {
             let wvp = proj * view * world;
 
             let player_position = camera.position;
-            level.draw(&world, &wvp, player_position, &mut renderer);
+            // level.draw(&world, &wvp, player_position, &mut renderer);
         }
 
         let mut buffer: Vec<u32>;
