@@ -7,13 +7,13 @@ use rand::rngs::StdRng;
 pub struct Vertex {
     position: Vec3,
     normal: Vec3,
-    screen_position: Vec3,
 }
 
 pub struct VertexOutput {
     position: Vec4,
     normal: Vec3,
     screen_position: Vec3,
+    world_position: Vec3,
 }
 
 impl Default for Vertex {
@@ -21,7 +21,6 @@ impl Default for Vertex {
         Self {
             position: Vec3::ZERO,
             normal: Vec3::ZERO,
-            screen_position: Vec3::ZERO,
         }
     }
 }
@@ -123,19 +122,21 @@ impl Renderer {
             let clip_position = wvp.mul_vec4(vertex.position.extend(1.0));
 
             // Object space -> World space
+            let w_position = world.transform_point3(vertex.position);
             let w_normal = world.transform_vector3(vertex.normal);
 
             output.push(VertexOutput {
                 position: clip_position,
                 normal: w_normal,
                 screen_position: Vec3::ZERO,
+                world_position: w_position,
             });
         }
 
         output
     }
 
-    pub fn draw(&mut self, vertex_buffer_positions: &Vec<Vec3>, index_buffer: &Vec<u32>, w: &Mat4, wvp: &Mat4) { 
+    pub fn draw(&mut self, vertex_buffer_positions: &Vec<Vec3>, index_buffer: &Vec<u32>, w: &Mat4, wvp: &Mat4) {
         // TEMP: Generate our Vertex vertex_buffer here
         let mut vertex_buffer: Vec<Vertex> = vec![Vertex::default(); vertex_buffer_positions.len()];
 
@@ -169,6 +170,8 @@ impl Renderer {
             let v0 = &vertex_buffer_clip[tri[0] as usize];
             let v1 = &vertex_buffer_clip[tri[1] as usize];
             let v2 = &vertex_buffer_clip[tri[2] as usize];
+
+            let normal = (v1.world_position - v0.world_position).cross(v2.world_position - v0.world_position).normalize();
 
             // clip when the vertex falls behind the near plane
             if v0.position.w + v0.position.z < 0.0 || v1.position.w + v1.position.z < 0.0 || v2.position.w + v2.position.z < 0.0 {
@@ -217,20 +220,23 @@ impl Renderer {
 
             let v0_rasterizer = VertexOutput {
                 position: v0.position,
-                normal: v0.normal,
+                normal: normal,
                 screen_position: v0_screen,
+                world_position: v0.world_position,
             };
 
             let v1_rasterizer = VertexOutput {
                 position: v1.position,
-                normal: v1.normal,
+                normal: normal,
                 screen_position: v1_screen,
+                world_position: v1.world_position,
             };
 
             let v2_rasterizer = VertexOutput {
                 position: v2.position,
-                normal: v2.normal,
+                normal: normal,
                 screen_position: v2_screen,
+                world_position: v2.world_position,
             };
 
             // Send to the rasterizer
@@ -397,12 +403,12 @@ impl Renderer {
                             // now we need to calculate the interpolated vertex attributes... fun!
                             let interpolated_screen: Vec3 = Vec3::new(p.x, p.y, pixel_z);
 
-
                             // run the "pixel shader" for this pixel
                             let c = Self::pixel_shader(VertexOutput {
                                 screen_position: interpolated_screen,
                                 position: interpolated_position,
                                 normal: interpolated_normal,
+                                world_position: Vec3::ZERO,
                             });
 
                             self.back_buffer[pixel_index] = c;
@@ -469,6 +475,7 @@ impl Renderer {
                                     screen_position: interpolated_screen,
                                     position: interpolated_position,
                                     normal: interpolated_normal,
+                                    world_position: Vec3::ZERO,
                                 };
 
                                 // inc stats
@@ -495,78 +502,20 @@ impl Renderer {
                 }
             }
         }
-
-        /*
-        for y in min_y..=max_y {
-            // initialize barycentric coords
-            let mut w0 = w0_min;
-            let mut w1 = w1_min;
-            let mut w2 = w2_min;
-
-            for x in min_x..=max_x {
-                let p = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, 0.0);
-
-                // skip if outside the triangle
-                if (w0 | w1 | w2) >= 0 {
-                    let pixel_index: usize = p.y as usize * self.screen_width + p.x as usize;
-
-                    // normalize our lambdas and move to floating point math
-                    let l0 = w0 as f32 / area as f32;
-                    let l1 = w1 as f32 / area as f32;
-                    let l2 = w2 as f32 / area as f32;
-
-                    // calculate perspective-correct depth
-                    let inv_z = (1.0 / v0.screen_position.z) * l0 + (1.0 / v1.screen_position.z) * l1 + (1.0 / v2.screen_position.z) * l2;
-                    let pixel_z = 1.0 / inv_z;
-
-                    // test against our z-buffer
-                    let zbuffer_value = self.depth_buffer[pixel_index];
-                    if pixel_z > zbuffer_value {
-                        continue;
-                    }
-
-                    // now we need to calculate the interpolated vertex attributes... fun!
-                    let interpolated_screen: Vec3 = Vec3::new(p.x, p.y, pixel_z);
-                    let interpolated_position = l0 * v0.position + l1 * v1.position + l2 * v2.position;
-                    let interpolated_normal = l0 * v0.normal + l1 * v1.normal + l2 * v2.normal;
-
-                    let v: Vertex = Vertex {
-                        screen_position: interpolated_screen,
-                        position: interpolated_position,
-                        normal: interpolated_normal,
-                    };
-
-                    // inc stats
-                    self.stats.pixels_drawn += 1;
-
-                    // run the "pixel shader" for this pixel
-                    let c = Self::pixel_shader(v);
-
-                    self.back_buffer[pixel_index] = c;
-                    self.depth_buffer[pixel_index] = pixel_z;
-                }
-
-                // take a step to the right
-                w0 += w0_stepx;
-                w1 += w1_stepx;
-                w2 += w2_stepx;
-            }
-
-            // and a step down
-            w0_min += w0_stepy;
-            w1_min += w1_stepy;
-            w2_min += w2_stepy;
-        }*/
     }
 
     fn rasterize_triangle_naive(&mut self, v0: &VertexOutput, v1: &VertexOutput, v2: &VertexOutput) {
         self.stats.rasterizer_input += 1;
 
+        let iv0 = IVec2::new(v0.screen_position.x.ceil() as i32, v0.screen_position.y.ceil() as i32);
+        let iv1 = IVec2::new(v1.screen_position.x.ceil() as i32, v1.screen_position.y.ceil() as i32);
+        let iv2 = IVec2::new(v2.screen_position.x.ceil() as i32, v2.screen_position.y.ceil() as i32);
+
         // compute bounding box
-        let mut min_x: i32 = v0.screen_position.x.min(v1.screen_position.x).min(v2.screen_position.x) as i32;
-        let mut min_y: i32 = v0.screen_position.y.min(v1.screen_position.y).min(v2.screen_position.y) as i32;
-        let mut max_x: i32 = v0.screen_position.x.max(v1.screen_position.x).max(v2.screen_position.x) as i32;
-        let mut max_y: i32 = v0.screen_position.y.max(v1.screen_position.y).max(v2.screen_position.y) as i32;
+        let mut min_x: i32 = iv0.x.min(iv1.x).min(iv2.x);
+        let mut min_y: i32 = iv0.y.min(iv1.y).min(iv2.y);
+        let mut max_x: i32 = iv0.x.max(iv1.x).max(iv2.x);
+        let mut max_y: i32 = iv0.y.max(iv1.y).max(iv2.y);
 
         // clip it against screen
         min_x = min_x.max(0);
@@ -574,9 +523,7 @@ impl Renderer {
         max_x = max_x.min(self.screen_width as i32 - 1);
         max_y = max_y.min(self.screen_height as i32 - 1);
 
-        let iv0 = IVec2::new(v0.screen_position.x.ceil() as i32, v0.screen_position.y.ceil() as i32);
-        let iv1 = IVec2::new(v1.screen_position.x.ceil() as i32, v1.screen_position.y.ceil() as i32);
-        let iv2 = IVec2::new(v2.screen_position.x.ceil() as i32, v2.screen_position.y.ceil() as i32);
+        let bb_min = IVec2::new(min_x, min_y);
 
         // calculate the area of the triangle (2x)
         let area: i32 = Self::edge_function(iv0, iv1, iv2);
@@ -585,31 +532,35 @@ impl Renderer {
         }
 
         // pre-calculate the area for the first pixel in the grid
-        let p_min = IVec2::new(min_x, min_y);
-        let mut w0_min = Self::edge_function(iv1, iv2, p_min);
-        let mut w1_min = Self::edge_function(iv2, iv0, p_min);
-        let mut w2_min = Self::edge_function(iv0, iv1, p_min);
+        // let mut w0_min = Self::edge_function(iv1, iv2, bb_min);
+        // let mut w1_min = Self::edge_function(iv2, iv0, bb_min);
+        // let mut w2_min = Self::edge_function(iv0, iv1, bb_min);
 
         // and calculate steps needed to move the barycentric coordinates
-        let w0_stepx = iv1.y - iv2.y;
-        let w0_stepy = iv2.x - iv1.x;
-        let w1_stepx = iv2.y - iv0.y;
-        let w1_stepy = iv0.x - iv2.x;
-        let w2_stepx = iv0.y - iv1.y;
-        let w2_stepy = iv1.x - iv0.x;
+        // let w0_stepx = iv1.y - iv2.y;
+        // let w0_stepy = iv2.x - iv1.x;
+        // let w1_stepx = iv2.y - iv0.y;
+        // let w1_stepy = iv0.x - iv2.x;
+        // let w2_stepx = iv0.y - iv1.y;
+        // let w2_stepy = iv1.x - iv0.x;
 
         for y in min_y..=max_y {
             // initialize barycentric coords
-            let mut w0 = w0_min;
-            let mut w1 = w1_min;
-            let mut w2 = w2_min;
+            // let mut w0 = w0_min;
+            // let mut w1 = w1_min;
+            // let mut w2 = w2_min;
 
             for x in min_x..=max_x {
-                let p = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, 0.0);
+                // let p = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, 0.0);
+                let ip = IVec2::new(x, y);
+
+                let w0 = Self::edge_function(iv1, iv2, ip);
+                let w1 = Self::edge_function(iv2, iv0, ip);
+                let w2 = Self::edge_function(iv0, iv1, ip);
 
                 // skip if outside the triangle
                 if (w0 | w1 | w2) >= 0 {
-                    let pixel_index: usize = p.y as usize * self.screen_width + p.x as usize;
+                    let pixel_index: usize = y as usize * self.screen_width + x as usize;
 
                     // normalize our lambdas and move to floating point math
                     let l0 = w0 as f32 / area as f32;
@@ -627,7 +578,7 @@ impl Renderer {
                     }
 
                     // now we need to calculate the interpolated vertex attributes... fun!
-                    let interpolated_screen: Vec3 = Vec3::new(p.x, p.y, pixel_z);
+                    let interpolated_screen: Vec3 = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, pixel_z);
                     let interpolated_position = l0 * v0.position + l1 * v1.position + l2 * v2.position;
                     let interpolated_normal = l0 * v0.normal + l1 * v1.normal + l2 * v2.normal;
 
@@ -635,6 +586,7 @@ impl Renderer {
                         screen_position: interpolated_screen,
                         position: interpolated_position,
                         normal: interpolated_normal,
+                        world_position: Vec3::ZERO,
                     };
 
                     // inc stats
@@ -648,15 +600,15 @@ impl Renderer {
                 }
 
                 // take a step to the right
-                w0 += w0_stepx;
-                w1 += w1_stepx;
-                w2 += w2_stepx;
+                // w0 += w0_stepx;
+                // w1 += w1_stepx;
+                // w2 += w2_stepx;
             }
 
             // and a step down
-            w0_min += w0_stepy;
-            w1_min += w1_stepy;
-            w2_min += w2_stepy;
+            // w0_min += w0_stepy;
+            // w1_min += w1_stepy;
+            // w2_min += w2_stepy;
         }
     }
 }

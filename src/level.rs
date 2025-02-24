@@ -294,17 +294,16 @@ impl Level {
                 if edge_index >= 0 {
                     let edge = &self.bsp_edges[edge_index as usize];
                     let v0 = self.vertices[edge.vertex0 as usize];
-                    let v1 = self.vertices[edge.vertex1 as usize];
-                    // println!("v0 {:?} v1 {:?}", v0, v1);
+                    // let v1 = self.vertices[edge.vertex1 as usize];
 
                     face_vertices.push(v0);
                 }
                 else {
                     let edge = &self.bsp_edges[-edge_index as usize];
-                    let v0 = self.vertices[edge.vertex1 as usize];
-                    let v1 = self.vertices[edge.vertex0 as usize];
+                    // let v0 = self.vertices[edge.vertex0 as usize];
+                    let v1 = self.vertices[edge.vertex1 as usize];
 
-                    face_vertices.push(v0);
+                    face_vertices.push(v1);
                 }
             }
 

@@ -8,7 +8,7 @@ use crate::color::Color;
 use crate::level::Level;
 use crate::renderer::{Renderer, RendererSettings};
 use camera::Camera;
-use glam::{vec3, Mat4, Quat, Vec3};
+use glam::{vec3, EulerRot, Mat4, Quat, Vec3};
 use minifb::{Key, Scale, Window, WindowOptions};
 use minifb_fonts::font6x8;
 use model::Model;
@@ -128,7 +128,7 @@ fn main() {
 
 
     let mut settings = GameSettings {
-        camera_speed: 10.0,
+        camera_speed: 100.0,
         camera_rotation_speed: 1.0,
         draw_depth: false,
         show_stats: true,
@@ -147,7 +147,7 @@ fn main() {
         zfar: 1000.0,
     };
 
-    let test_case_index = 2;
+    let test_case_index = 0;
     let test_case: &GameTestCase = &test_cases[test_case_index];
     {
         camera.position = test_case.camera_position;
@@ -160,6 +160,8 @@ fn main() {
     // camera.position = Vec3::new(-538.0,1000.0,0.0);
 
     let mut instant = Instant::now();
+
+    let mut model_angle = 0.0;
 
     // run the main-loop
     while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -177,11 +179,14 @@ fn main() {
         let proj = camera.get_projection_mat();
 
         {
+            model_angle += 0.1 * elapsed_seconds;
             let world = Mat4::from_scale_rotation_translation(
                 Vec3::new(10.0, 10.0, 10.0),
-                Quat::IDENTITY,
+                Quat::from_euler(EulerRot::ZYX, model_angle,0.0,90.0f32.to_radians()),
                 Vec3::new(0.0, 0.0, 0.0)
             );
+
+
 
             let wvp = proj * view * world;
 
