@@ -339,6 +339,18 @@ impl Level {
         file.read_i32_into::<LittleEndian>(&mut offsets)?;
 
         for offset in offsets {
+            if offset == -1 {
+                textures.push(Texture {
+                    name: "null".to_string(),
+                    width: 0,
+                    height: 0,
+                    data: vec![],
+                    palette: palette.clone(),
+                });
+
+                continue;
+            }
+
             let texture_header_offset = lump.offset as u64 + offset as u64;
             file.seek(SeekFrom::Start(texture_header_offset))?;
 
