@@ -443,6 +443,7 @@ dependencies = [
 name = "rust-rasterizer"
 version = "0.1.0"
 dependencies = [
+ "byteorder",
  "glam",
  "minifb",
  "minifb_fonts",

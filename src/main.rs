@@ -8,7 +8,7 @@ use crate::color::Color;
 use crate::level::Level;
 use crate::renderer::{Renderer, RendererSettings};
 use camera::Camera;
-use glam::{vec3, EulerRot, Mat4, Quat, Vec3};
+use glam::{vec3, Mat4, Quat, Vec3};
 use minifb::{Key, Scale, Window, WindowOptions};
 use minifb_fonts::font6x8;
 use model::Model;
@@ -23,10 +23,6 @@ struct GameSettings {
     pub draw_depth: bool,
     pub show_stats: bool,
     pub show_tile_grid: bool,
-}
-
-struct GameTestCase {
-    pub camera_position: Vec3,
 }
 
 fn float_to_u32_color(value: f32) -> u32 {
@@ -100,19 +96,6 @@ fn main() {
         panic!("{}", e);
     });
 
-    let test_cases = vec![
-        GameTestCase {
-            camera_position: vec3(-0.5,-50.0,20.0),
-        },
-        GameTestCase {
-            camera_position: vec3(-538.0,1000.0,0.0),
-            // camera_position: vec3(-2282.5986, -939.2992, 4787.5225),
-        },
-        GameTestCase {
-            camera_position: vec3(544.0,288.0,88.0),
-        }
-    ];
-
     // create our renderer
     let renderer_settings = RendererSettings {
         naive_rasterization: true,
@@ -126,10 +109,20 @@ fn main() {
     let model = Model::load("data/plane.obj").expect("Failed to load model");
     let level = Level::load("data/e1m1.bsp").expect("Failed to load level");
 
+    let player_spawn = level
+        .get_entity("info_player_start")
+        .and_then(|e| e.get_property("origin"))
+        .map(|origin| {
+            let mut parts = origin.split_whitespace().flat_map(str::parse::<f32>);
+            vec3(parts.next().unwrap_or(0.0), parts.next().unwrap_or(0.0), parts.next().unwrap_or(0.0))
+        })
+        .unwrap_or(vec3(0.0, 0.0, 0.0));
+
+    println!("Player spawn: {:?}", player_spawn);
 
     let mut settings = GameSettings {
-        camera_speed: 100.0,
-        camera_rotation_speed: 1.0,
+        camera_speed: 200.0,
+        camera_rotation_speed: 3.0,
         draw_depth: false,
         show_stats: true,
         show_tile_grid: false,
@@ -137,27 +130,14 @@ fn main() {
 
     // create our camera
     let mut camera = Camera {
-        position: Vec3::new(-0.5,0.0,0.0),
-        rotation: Quat::IDENTITY,
+        position: player_spawn,
         pitch: 0.0,
         yaw: 90.0_f32.to_radians(),
         aspect: SCREEN_WIDTH as f32 / SCREEN_HEIGHT as f32,
         fov: 70.0,
         znear: 1.0,
-        zfar: 1000.0,
+        zfar: 10000.0,
     };
-
-    let test_case_index = 0;
-    let test_case: &GameTestCase = &test_cases[test_case_index];
-    {
-        camera.position = test_case.camera_position;
-    }
-
-    // camera.position = Vec3::new(-2282.5986, -939.2992, 4787.5225);
-    // camera.position = Vec3::new(480.0, 352.0, 88.0);
-
-    // camera.position = Vec3::new(-269.10007, 2353.6995, 597.60004);
-    // camera.position = Vec3::new(-538.0,1000.0,0.0);
 
     let mut instant = Instant::now();
 
@@ -191,7 +171,7 @@ fn main() {
 
             let wvp = proj * view * world;
 
-            renderer.draw(&model.vertices, &model.indices, &world, &wvp);
+            // renderer.draw(&model.vertices, &model.indices, &world, &wvp);
         }
 
         {
@@ -204,7 +184,7 @@ fn main() {
             let wvp = proj * view * world;
 
             let player_position = camera.position;
-            // level.draw(&world, &wvp, player_position, &mut renderer);
+            level.draw(&world, &wvp, player_position, &mut renderer);
         }
 
         let mut buffer: Vec<u32>;
@@ -233,14 +213,14 @@ fn main() {
                 .trim_start_matches("RendererStats {\n") // Remove struct name
                 .trim_end_matches("\n}") // Remove closing brace
                 .replace("    ", ""); // Remove excess indentation
-            // text.draw_text(&mut buffer, 10, 80, str_stats.as_str());
+            text.draw_text(&mut buffer, 10, 80, str_stats.as_str());
 
-            let mut y_offset = 100;
-            for (key, value) in &stats.debug_values {
-                let str = format!("{}: {}", key, value);
-                text.draw_text(&mut buffer, 10, y_offset, str.as_str());
-                y_offset += 20;
-            }
+            // let mut y_offset = 100;
+            // for (key, value) in &stats.debug_values {
+            //     let str = format!("{}: {}", key, value);
+            //     text.draw_text(&mut buffer, 10, y_offset, str.as_str());
+            //     y_offset += 20;
+            // }
         }
 
         if settings.show_tile_grid {

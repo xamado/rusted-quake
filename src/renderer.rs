@@ -1,19 +1,29 @@
-use rand::{SeedableRng};
-use crate::color::Color;
-use glam::{vec3, IVec2, Mat4, Vec3, Vec4};
+use glam::{ivec2, vec4, IVec2, Mat4, Vec2, Vec3, Vec4};
 use rand::rngs::StdRng;
+use rand::SeedableRng;
+use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Vertex {
-    position: Vec3,
-    normal: Vec3,
+    pub position: Vec3,
+    pub normal: Vec3,
+    pub tex_coord: Vec2,
+}
+
+pub struct Texture {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<Vec<u8>>,
+    pub palette: Arc<[u32; 256]>,
 }
 
 #[derive(Copy, Clone, Debug)]
 pub struct VertexOutput {
     position: Vec4,
     normal: Vec3,
-    screen_position: Vec3,
+    texcoord: Vec2,
+    screen_position: Vec4,
     world_position: Vec3,
 }
 
@@ -22,6 +32,7 @@ impl Default for Vertex {
         Self {
             position: Vec3::ZERO,
             normal: Vec3::ZERO,
+            tex_coord: Vec2::ZERO,
         }
     }
 }
@@ -30,6 +41,8 @@ impl Default for Vertex {
 pub struct RendererStats {
     pixels_drawn: u32,
     triangles_input: u32,
+    triangles_after_clipping: u32,
+    triangles_clipping_extra: u32,
     rasterizer_input: u32,
     pub debug_values: Vec<(String, String)>,
 }
@@ -129,7 +142,8 @@ impl Renderer {
             output.push(VertexOutput {
                 position: clip_position,
                 normal: w_normal,
-                screen_position: Vec3::ZERO,
+                texcoord: vertex.tex_coord,
+                screen_position: Vec4::ZERO,
                 world_position: w_position,
             });
         }
@@ -137,74 +151,126 @@ impl Renderer {
         output
     }
 
-    fn clip_edge(v1: &VertexOutput, v2: &VertexOutput) -> VertexOutput {
-        let t = (- (v1.position.w + v1.position.z)) / ((v2.position.w + v2.position.z) - (v1.position.w + v1.position.z));
-        VertexOutput {
+    fn clip_edge(v1: &VertexOutput, v2: &VertexOutput, plane: &Vec4) -> VertexOutput {
+        // let t = (- (v1.position.w + v1.position.z)) / ((v2.position.w + v2.position.z) - (v1.position.w + v1.position.z));
+
+        let d_in = v1.position.dot(*plane);
+        let d_out = v2.position.dot(*plane);
+        let t = d_in / (d_in - d_out);
+
+        let clipped_vertex = VertexOutput {
             position: v1.position + t * (v2.position - v1.position),
             normal: v1.normal + t * (v2.normal - v1.normal),
+            texcoord: v1.texcoord + t * (v2.texcoord - v1.texcoord),
             screen_position: v1.screen_position + t * (v2.screen_position - v1.screen_position),
             world_position: v1.world_position + t * (v2.world_position - v1.world_position),
-        }
+        };
+
+        clipped_vertex
     }
 
-    fn clip_triangle(&self, v0: &VertexOutput, v1: &VertexOutput, v2: &VertexOutput) -> Vec<[VertexOutput; 3]> {
-        let mut inside = vec![];
-        let mut outside = vec![];
-
-        for v in [v0,v1,v2] {
-            if v.position.w + v.position.z >= 0.0 {
-                inside.push(*v); // copy
-            }
-            else {
-                outside.push(*v); // copy
-            }
+    fn clip_triangle(v0: &VertexOutput, v1: &VertexOutput, v2: &VertexOutput) -> Vec<[VertexOutput;3]> {
+        // Discard the triangle completely if off-screen. Our clipping routine won't handle this since we use expanded
+        // guard-band planes to avoid clipping too early
+        let outside_left   = v0.position.x < -v0.position.w && v1.position.x < -v1.position.w && v2.position.x < -v2.position.w;
+        let outside_right  = v0.position.x >  v0.position.w && v1.position.x >  v1.position.w && v2.position.x >  v2.position.w;
+        let outside_bottom = v0.position.y < -v0.position.w && v1.position.y < -v1.position.w && v2.position.y < -v2.position.w;
+        let outside_top    = v0.position.y >  v0.position.w && v1.position.y >  v1.position.w && v2.position.y >  v2.position.w;
+        let outside_near   = v0.position.z < -v0.position.w && v1.position.z < -v1.position.w && v2.position.z < -v2.position.w;
+        let outside_far    = v0.position.z >  v0.position.w && v1.position.z >  v1.position.w && v2.position.z >  v2.position.w;
+        if outside_left || outside_right || outside_bottom || outside_top || outside_near || outside_far {
+            return vec![];
         }
 
-        match inside.len() {
-            3 => { // fully inside
+        let mut triangles: Vec<[VertexOutput;3]> = vec![];
+        triangles.push([*v0, *v1, *v2]);
+
+        let guard_band_scale = 15.0;
+
+        let clip_planes = [
+            vec4(0.0, 0.0, 1.0, 1.0),  // Near Plane: z + w = 0
+            vec4(1.0, 0.0, 0.0, guard_band_scale),  // Left Plane: -x + w = 0
+            vec4(-1.0, 0.0, 0.0,guard_band_scale), // Right Plane: x + w = 0
+            vec4(0.0, 1.0, 0.0, guard_band_scale),  // Bottom Plane: -y + w = 0
+            vec4(0.0, -1.0, 0.0,guard_band_scale), // Top Plane: y + w = 0
+        ];
+
+        for plane in clip_planes {
+            let mut new_triangles: Vec<[VertexOutput;3]> = vec![];
+
+            for t in triangles.iter() {
+                let clipped_triangles = Self::clip_triangle_plane(&t[0], &t[1], &t[2], &plane);
+                new_triangles.extend_from_slice(&clipped_triangles);
+            }
+
+            triangles = new_triangles;
+        }
+
+        triangles
+    }
+
+    fn clip_triangle_plane(v0: &VertexOutput, v1: &VertexOutput, v2: &VertexOutput, plane: &Vec4) -> Vec<[VertexOutput; 3]> {
+        let d0 = v0.position.dot(*plane);
+        let d1 = v1.position.dot(*plane);
+        let d2 = v2.position.dot(*plane);
+
+        match ((d0 >= 0.0) as u8, (d1 >= 0.0) as u8, (d2 >= 0.0) as u8) {
+            (1, 1, 1) => { // fully inside, nothing to clip
                 vec![[*v0, *v1, *v2]]
             }
-            2 => {
-                let new1 = Self::clip_edge(&inside[0], &outside[0]);
-                let new2 = Self::clip_edge(&inside[1], &outside[0]);
+            (0, 1, 1) => { // v0 is outside
+                let new0 = Self::clip_edge(v0, v1, plane);
+                let new1 = Self::clip_edge(v0, v2, plane);
                 vec![
-                    [inside[0], inside[1], new1],
-                    [inside[1], new1, new2]
+                    [new0, *v1, *v2],
+                    [new0, *v2, new1]
                 ]
             }
-            1 => {
-                let new1 = Self::clip_edge(&inside[0], &outside[0]);
-                let new2 = Self::clip_edge(&inside[0], &outside[1]);
-                vec![[inside[0], new1, new2]]
+            (1, 0, 1) => { // v1 is outside, replace it
+                let new0 = Self::clip_edge(v1, v0, plane);
+                let new1 = Self::clip_edge(v1, v2, plane);
+                vec![
+                    [*v0, new0, *v2],
+                    [new0, new1, *v2]
+                ]
             }
-            _ => vec![]
+            (1, 1, 0) => { // v2 is outside
+                let new0 = Self::clip_edge(v2, v0, plane);
+                let new1 = Self::clip_edge(v2, v1, plane);
+                vec![
+                    [*v0, *v1, new0],
+                    [new0, *v1, new1]
+                ]
+            }
+            (0, 0, 1) => { // v2 is inside, v0 and v1 are outside
+                let nv0 = Self::clip_edge(v2, v0, plane);
+                let nv1 = Self::clip_edge(v2, v1, plane);
+                vec![
+                    [nv0, nv1, *v2]
+                ]
+            }
+            (1, 0, 0) => { // v0 is inside, v1 and v2 are outside
+                let nv1 = Self::clip_edge(v0, v1, plane);
+                let nv2 = Self::clip_edge(v0, v2, plane);
+                vec![
+                    [*v0, nv1, nv2]
+                ]
+            }
+            (0, 1, 0) => { // v0 and v2 are outside, v1 is inside
+                let nv0 = Self::clip_edge(v1, v0, plane);
+                let nv2 = Self::clip_edge(v1, v2, plane);
+                vec![
+                    [nv0, *v1, nv2]
+                ]
+            }
+            (0, 0, 0) => { // Fully outside, discard triangle
+                vec![]
+            }
+            _ => unreachable!(),
         }
     }
 
-    pub fn draw(&mut self, vertex_buffer_positions: &Vec<Vec3>, index_buffer: &Vec<u32>, w: &Mat4, wvp: &Mat4) {
-        // TEMP: Generate our Vertex vertex_buffer here
-        let mut vertex_buffer: Vec<Vertex> = vec![Vertex::default(); vertex_buffer_positions.len()];
-
-        // TEMP: Generate normals for our vertices
-        for tri in index_buffer.chunks_exact(3) {
-            let i0 = tri[0] as usize;
-            let i1 = tri[1] as usize;
-            let i2 = tri[2] as usize;
-
-            let p0: Vec3 = vertex_buffer_positions[i0];
-            let p1: Vec3 = vertex_buffer_positions[i1];
-            let p2: Vec3 = vertex_buffer_positions[i2];
-
-            let normal = (p1 - p0).cross(p2 - p0).normalize();
-
-            vertex_buffer[i0].position = p0;
-            vertex_buffer[i0].normal = normal;
-            vertex_buffer[i1].position = p1;
-            vertex_buffer[i1].normal = normal;
-            vertex_buffer[i2].position = p2;
-            vertex_buffer[i2].normal = normal;
-        }
-
+    pub fn draw(&mut self, vertex_buffer: &Vec<Vertex>, index_buffer: &Vec<u32>, w: &Mat4, wvp: &Mat4, texture: &Texture) {
         // Vertex Shader Stage -> Transform our vertices to clip space
         let vertex_buffer_clip: Vec<VertexOutput> = self.vertex_stage(&vertex_buffer, &wvp, &w);
 
@@ -217,7 +283,10 @@ impl Renderer {
             let clip_v2 = &vertex_buffer_clip[tri[2] as usize];
 
             // clip input triangles, output could be 1 or 2 triangles
-            let triangles = self.clip_triangle(clip_v0, clip_v1, clip_v2);
+            let triangles = Self::clip_triangle(clip_v0, clip_v1, clip_v2);
+
+            self.stats.triangles_after_clipping += triangles.len() as u32;
+            self.stats.triangles_clipping_extra += triangles.len().saturating_sub(1) as u32;
 
             for triangle_verts in triangles {
                 // let normal = (triangle_verts[1].world_position - triangle_verts[0].world_position)
@@ -238,6 +307,9 @@ impl Renderer {
 
                 // clip when the vertex falls behind the near plane
                 if v0.position.w + v0.position.z < 0.0 || v1.position.w + v1.position.z < 0.0 || v2.position.w + v2.position.z < 0.0 {
+                    // self.stats.push_stat("clipped by strange case: ", "true");
+                    println!("clipped by strange case: v0 {:?} | v1 {:?} | v2 {:?}", v0, v1, v2);
+                    // unreachable!();
                     continue; // clipped
                 }
 
@@ -251,39 +323,46 @@ impl Renderer {
                 // }
 
                 // viewport transformation
-                let v0_screen = vec3(
+                let v0_screen = vec4(
                     (v0_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
                     (1.0 - v0_ndc.y) * 0.5 * self.screen_height as f32,
-                    v0_ndc.z
+                    v0_ndc.z,
+                    v0.position.w,
                 );
 
-                let v1_screen = vec3(
+                let v1_screen = vec4(
                     (v1_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
                     (1.0 - v1_ndc.y) * 0.5 * self.screen_height as f32,
-                    v1_ndc.z
+                    v1_ndc.z,
+                    v1.position.w,
                 );
 
-                let v2_screen = vec3(
+                let v2_screen = vec4(
                     (v2_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
                     (1.0 - v2_ndc.y) * 0.5 * self.screen_height as f32,
-                    v2_ndc.z
+                    v2_ndc.z,
+                    v2.position.w,
                 );
 
                 // guard-band clipping
                 let guardband = 8192.0 * 4.0;
                 if v0_screen.x < -guardband || v0_screen.x > guardband || v0_screen.y < -guardband || v0_screen.y > guardband {
+                    self.stats.push_stat("clipped by guardband", "v0");
                     continue; // clipped
                 }
                 if v1_screen.x < -guardband || v1_screen.x > guardband || v1_screen.y < -guardband || v1_screen.y > guardband {
+                    self.stats.push_stat("clipped by guardband", "v1");
                     continue; // clipped
                 }
                 if v2_screen.x < -guardband || v2_screen.x > guardband || v2_screen.y < -guardband || v2_screen.y > guardband {
+                    self.stats.push_stat("clipped by guardband", "v2");
                     continue; // clipped
                 }
 
                 let v0_rasterizer = VertexOutput {
                     position: v0.position,
                     normal: normal,
+                    texcoord: v0.texcoord,
                     screen_position: v0_screen,
                     world_position: v0.world_position,
                 };
@@ -291,6 +370,7 @@ impl Renderer {
                 let v1_rasterizer = VertexOutput {
                     position: v1.position,
                     normal: normal,
+                    texcoord: v1.texcoord,
                     screen_position: v1_screen,
                     world_position: v1.world_position,
                 };
@@ -298,37 +378,56 @@ impl Renderer {
                 let v2_rasterizer = VertexOutput {
                     position: v2.position,
                     normal: normal,
+                    texcoord: v2.texcoord,
                     screen_position: v2_screen,
                     world_position: v2.world_position,
                 };
 
                 // Send to the rasterizer
                 if self.settings.naive_rasterization {
-                    self.rasterize_triangle_naive(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer);
+                    self.rasterize_triangle_naive(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer, texture);
                 }
                 else {
-                    self.rasterize_triangle(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer);
+                    unreachable!();
+                    // self.rasterize_triangle(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer);
                 }
             }
         }
     }
 
-    fn pixel_shader(v: VertexOutput) -> u32 {
+    fn texture_sample(texture: &Texture, uv: Vec2) -> u32 {
+        let mip_level = 0;
+
+        let mip_width: u32 = texture.width >> mip_level;
+        let mip_height: u32 = texture.height >> mip_level;
+
+        let wrap_uv = uv - uv.floor();
+
+        let mip_level_data: &Vec<u8> = &texture.data[0];
+        let coords = ivec2(
+            (wrap_uv.x * (mip_width - 1) as f32) as i32,
+            (wrap_uv.y * (mip_height - 1) as f32) as i32,
+        );
+
+        let indexed_color: u8 = mip_level_data[(coords.y as u32 * mip_width + coords.x as u32) as usize];
+        texture.palette[indexed_color as usize]
+    }
+
+    fn pixel_shader(v: &VertexOutput, texture: &Texture) -> u32 {
         // let light_dir = Vec3::new(0.0, -1.0, -1.0);
         // let intensity = v.normal.dot(light_dir);
         // let c: Color = Color::from_f32(1.0 * intensity, 1.0 * intensity, 1.0 * intensity, 1.0 * intensity);
 
-        let c: Color = Color::from_f32(v.normal.x.abs(), v.normal.y.abs(), v.normal.z.abs(), 1.0);
+        // let c: Color = Color::from_f32(v.normal.x.abs(), v.normal.y.abs(), v.normal.z.abs(), 1.0);
 
-        // return the color
-        c.to_u32()
+        Self::texture_sample(texture, v.texcoord)
     }
 
     fn edge_function(v0: IVec2, v1: IVec2, p: IVec2) -> i32 {
         (v1.x - v0.x) * (p.y - v0.y) - (v1.y - v0.y) * (p.x - v0.x)
     }
 
-    fn rasterize_triangle(&mut self, v0: &VertexOutput, v1: &VertexOutput, v2: &VertexOutput) {
+    /*fn rasterize_triangle(&mut self, v0: &VertexOutput, v1: &VertexOutput, v2: &VertexOutput) {
         self.stats.rasterizer_input += 1;
         let tile_size = self.settings.tile_size;
 
@@ -470,6 +569,7 @@ impl Renderer {
                             let c = Self::pixel_shader(VertexOutput {
                                 screen_position: interpolated_screen,
                                 position: interpolated_position,
+                                tex_coord: interpolated_tex_coord,
                                 normal: interpolated_normal,
                                 world_position: Vec3::ZERO,
                             });
@@ -565,9 +665,9 @@ impl Renderer {
                 }
             }
         }
-    }
+    }*/
 
-    fn rasterize_triangle_naive(&mut self, v0: &VertexOutput, v1: &VertexOutput, v2: &VertexOutput) {
+    fn rasterize_triangle_naive(&mut self, v0: &VertexOutput, v1: &VertexOutput, v2: &VertexOutput, texture: &Texture) {
         self.stats.rasterizer_input += 1;
 
         let iv0 = IVec2::new(v0.screen_position.x.ceil() as i32, v0.screen_position.y.ceil() as i32);
@@ -607,6 +707,16 @@ impl Renderer {
         // let w2_stepx = iv0.y - iv1.y;
         // let w2_stepy = iv1.x - iv0.x;
 
+        // Compute perspective-correct inverse depth
+        let inv_z0 = 1.0 / v0.screen_position.z;
+        let inv_z1 = 1.0 / v1.screen_position.z;
+        let inv_z2 = 1.0 / v2.screen_position.z;
+
+        // Pre-divide texcoords by depth
+        let texcoord0 = v0.texcoord / v0.screen_position.w;
+        let texcoord1 = v1.texcoord / v1.screen_position.w;
+        let texcoord2 = v2.texcoord / v2.screen_position.w;
+
         for y in min_y..=max_y {
             // initialize barycentric coords
             // let mut w0 = w0_min;
@@ -631,8 +741,7 @@ impl Renderer {
                     let l2 = w2 as f32 / area as f32;
 
                     // calculate perspective-correct depth
-                    let inv_z = (1.0 / v0.screen_position.z) * l0 + (1.0 / v1.screen_position.z) * l1 + (1.0 / v2.screen_position.z) * l2;
-                    let pixel_z = 1.0 / inv_z;
+                    let pixel_z = 1.0 / (inv_z0 * l0 + inv_z1 * l1 + inv_z2 * l2);
 
                     // test against our z-buffer
                     let zbuffer_value = self.depth_buffer[pixel_index];
@@ -640,14 +749,19 @@ impl Renderer {
                         continue;
                     }
 
+                    let inv_w = (l0 / v0.position.w + l1 / v1.position.w + l2 / v2.position.w);
+                    let pixel_w = 1.0 / inv_w;
+
                     // now we need to calculate the interpolated vertex attributes... fun!
-                    let interpolated_screen: Vec3 = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, pixel_z);
+                    let interpolated_screen: Vec4 = Vec4::new(x as f32 + 0.5, y as f32 + 0.5, pixel_z, 0.0);
                     let interpolated_position = l0 * v0.position + l1 * v1.position + l2 * v2.position;
                     let interpolated_normal = l0 * v0.normal + l1 * v1.normal + l2 * v2.normal;
+                    let interpolated_texcoord = (l0 * texcoord0 + l1 * texcoord1 + l2 * texcoord2) * pixel_w;
 
                     let v = VertexOutput {
                         screen_position: interpolated_screen,
                         position: interpolated_position,
+                        texcoord: interpolated_texcoord,
                         normal: interpolated_normal,
                         world_position: Vec3::ZERO,
                     };
@@ -656,7 +770,7 @@ impl Renderer {
                     self.stats.pixels_drawn += 1;
 
                     // run the "pixel shader" for this pixel
-                    let c = Self::pixel_shader(v);
+                    let c = Self::pixel_shader(&v, texture);
 
                     self.back_buffer[pixel_index] = c;
                     self.depth_buffer[pixel_index] = pixel_z;

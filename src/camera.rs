@@ -2,7 +2,6 @@ use glam::{Mat4, Quat, Vec3, Vec4};
 
 pub struct Camera {
     pub position: Vec3,
-    pub rotation: Quat,
     pub pitch: f32,
     pub yaw: f32,
     pub aspect: f32,
@@ -15,7 +14,6 @@ impl Camera {
     pub fn new() -> Camera {
         Camera {
             position: Vec3::ZERO,
-            rotation: Quat::IDENTITY,
             pitch: 0.0,
             yaw: 0.0,
             aspect: 0.0,
