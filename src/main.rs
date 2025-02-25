@@ -22,7 +22,6 @@ struct GameSettings {
     pub camera_rotation_speed: f32,
     pub draw_depth: bool,
     pub show_stats: bool,
-    pub show_tile_grid: bool,
 }
 
 fn float_to_u32_color(value: f32) -> u32 {
@@ -72,10 +71,6 @@ fn process_input(window: &Window, elapsed_seconds: f32, game_settings: &mut Game
     else if window.is_key_released(Key::NumPadPlus) {
         game_settings.camera_speed += 10.0;
     }
-
-    if window.is_key_released(Key::F1) {
-        game_settings.show_tile_grid = !game_settings.show_tile_grid;
-    }
 }
 
 fn main() {
@@ -107,16 +102,22 @@ fn main() {
 
     // load our test obj file
     let model = Model::load("data/plane.obj").expect("Failed to load model");
-    let level = Level::load("data/e1m1.bsp").expect("Failed to load level");
+    let level = Level::load("data/e1m2.bsp").expect("Failed to load level");
 
-    let player_spawn = level
-        .get_entity("info_player_start")
+    let entity_player_start = level.get_entity("info_player_start");
+
+    let player_spawn: Vec3 = entity_player_start
         .and_then(|e| e.get_property("origin"))
         .map(|origin| {
             let mut parts = origin.split_whitespace().flat_map(str::parse::<f32>);
             vec3(parts.next().unwrap_or(0.0), parts.next().unwrap_or(0.0), parts.next().unwrap_or(0.0))
         })
         .unwrap_or(vec3(0.0, 0.0, 0.0));
+
+    let player_rotation: f32 = entity_player_start
+        .and_then(|e| e.get_property("angle"))
+        .map(|angle| angle.parse().unwrap())
+        .unwrap_or(0.0);
 
     println!("Player spawn: {:?}", player_spawn);
 
@@ -125,14 +126,13 @@ fn main() {
         camera_rotation_speed: 3.0,
         draw_depth: false,
         show_stats: true,
-        show_tile_grid: false,
     };
 
     // create our camera
     let mut camera = Camera {
         position: player_spawn,
         pitch: 0.0,
-        yaw: 90.0_f32.to_radians(),
+        yaw: player_rotation.to_radians(),
         aspect: SCREEN_WIDTH as f32 / SCREEN_HEIGHT as f32,
         fov: 70.0,
         znear: 1.0,
@@ -140,8 +140,6 @@ fn main() {
     };
 
     let mut instant = Instant::now();
-
-    let mut model_angle = 0.0;
 
     // run the main-loop
     while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -159,18 +157,13 @@ fn main() {
         let proj = camera.get_projection_mat();
 
         {
-            // model_angle += 0.1 * elapsed_seconds;
             let world = Mat4::from_scale_rotation_translation(
                 Vec3::new(10.0, 10.0, 10.0),
                 Quat::IDENTITY,
-                // Quat::from_euler(EulerRot::ZYX, model_angle,0.0,90.0f32.to_radians()),
                 Vec3::new(0.0, 0.0, 0.0)
             );
 
-
-
             let wvp = proj * view * world;
-
             // renderer.draw(&model.vertices, &model.indices, &world, &wvp);
         }
 
@@ -199,8 +192,6 @@ fn main() {
             buffer = Vec::from(renderer.get_back_buffer());
         }
 
-
-
         // draw some informative text
         let text_frame_time = format!("frame: {}ms", (elapsed_seconds * 1000.0) as u32);
         text.draw_text(&mut buffer, 10, 20, text_frame_time.as_str());
@@ -221,22 +212,6 @@ fn main() {
             //     text.draw_text(&mut buffer, 10, y_offset, str.as_str());
             //     y_offset += 20;
             // }
-        }
-
-        if settings.show_tile_grid {
-            for y in (0..SCREEN_HEIGHT).step_by(renderer.get_settings().tile_size as usize) {
-                for x in 0..SCREEN_WIDTH {
-                    let pixel = y * SCREEN_WIDTH + x;
-                    buffer[pixel] = Color::from_f32(1.0, 1.0, 0.0, 1.0).to_u32();
-                }
-            }
-
-            for x in (0..SCREEN_WIDTH).step_by(renderer.get_settings().tile_size as usize) {
-                for y in 0..SCREEN_HEIGHT {
-                    let pixel = y * SCREEN_WIDTH + x;
-                    buffer[pixel] = Color::from_f32(1.0, 1.0, 0.0, 1.0).to_u32();
-                }
-            }
         }
 
         window

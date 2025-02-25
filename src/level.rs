@@ -410,7 +410,7 @@ impl Level {
             } else if line == "}" {
                 // Push entity and reset
                 entities.push(std::mem::take(&mut entity));
-            } else if let Some((key, rest)) = line.split_once('"') {
+            } else if let Some((_, rest)) = line.split_once('"') {
                 if let Some((key, rest)) = rest.split_once('"') {
                     if let Some((_, value)) = rest.split_once('"') {
                         if let Some((value, _)) = value.split_once('"') {

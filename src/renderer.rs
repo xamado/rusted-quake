@@ -685,9 +685,7 @@ impl Renderer {
         min_y = min_y.max(0);
         max_x = max_x.min(self.screen_width as i32 - 1);
         max_y = max_y.min(self.screen_height as i32 - 1);
-
-        let bb_min = IVec2::new(min_x, min_y);
-
+        
         // calculate the area of the triangle (2x)
         let area: i32 = Self::edge_function(iv0, iv1, iv2);
         if area <= 0 { // negative area means it's a back-facing triangle
