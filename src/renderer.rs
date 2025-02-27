@@ -1,13 +1,16 @@
-use glam::{ivec2, vec4, IVec2, Mat4, Vec2, Vec3, Vec4};
+use glam::{ivec2, vec3, vec4, IVec2, Mat4, Vec2, Vec3, Vec4, Vec4Swizzles};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::sync::Arc;
+use crate::color::Color;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Vertex {
     pub position: Vec3,
     pub normal: Vec3,
+    pub color: Vec4,
     pub tex_coord: Vec2,
+    pub uv_lightmap: Vec2,
 }
 
 pub struct Texture {
@@ -22,7 +25,9 @@ pub struct Texture {
 pub struct VertexOutput {
     position: Vec4,
     normal: Vec3,
+    color: Vec4,
     texcoord: Vec2,
+    uv_lightmap: Vec2,
     screen_position: Vec4,
     world_position: Vec3,
 }
@@ -32,7 +37,9 @@ impl Default for Vertex {
         Self {
             position: Vec3::ZERO,
             normal: Vec3::ZERO,
+            color: Vec4::ZERO,
             tex_coord: Vec2::ZERO,
+            uv_lightmap: Vec2::ZERO,
         }
     }
 }
@@ -142,7 +149,9 @@ impl Renderer {
             output.push(VertexOutput {
                 position: clip_position,
                 normal: w_normal,
+                color: vertex.color,
                 texcoord: vertex.tex_coord,
+                uv_lightmap: vertex.uv_lightmap,
                 screen_position: Vec4::ZERO,
                 world_position: w_position,
             });
@@ -161,7 +170,9 @@ impl Renderer {
         let clipped_vertex = VertexOutput {
             position: v1.position + t * (v2.position - v1.position),
             normal: v1.normal + t * (v2.normal - v1.normal),
+            color: v1.color + t * (v2.color - v1.color),
             texcoord: v1.texcoord + t * (v2.texcoord - v1.texcoord),
+            uv_lightmap: v1.uv_lightmap + t * (v2.uv_lightmap - v1.uv_lightmap),
             screen_position: v1.screen_position + t * (v2.screen_position - v1.screen_position),
             world_position: v1.world_position + t * (v2.world_position - v1.world_position),
         };
@@ -270,7 +281,16 @@ impl Renderer {
         }
     }
 
-    pub fn draw(&mut self, vertex_buffer: &Vec<Vertex>, index_buffer: &Vec<u32>, w: &Mat4, wvp: &Mat4, texture: &Texture) {
+    pub fn draw(
+        &mut self,
+        vertex_buffer: &Vec<Vertex>,
+        index_buffer: &Vec<u32>,
+        w: &Mat4,
+        wvp: &Mat4,
+        texture: &Texture,
+        lightmap: &[u8],
+        lightmap_size: &IVec2,
+    ) {
         // Vertex Shader Stage -> Transform our vertices to clip space
         let vertex_buffer_clip: Vec<VertexOutput> = self.vertex_stage(&vertex_buffer, &wvp, &w);
 
@@ -362,7 +382,9 @@ impl Renderer {
                 let v0_rasterizer = VertexOutput {
                     position: v0.position,
                     normal: normal,
+                    color: v0.color,
                     texcoord: v0.texcoord,
+                    uv_lightmap: v0.uv_lightmap,
                     screen_position: v0_screen,
                     world_position: v0.world_position,
                 };
@@ -370,7 +392,9 @@ impl Renderer {
                 let v1_rasterizer = VertexOutput {
                     position: v1.position,
                     normal: normal,
+                    color: v1.color,
                     texcoord: v1.texcoord,
+                    uv_lightmap: v1.uv_lightmap,
                     screen_position: v1_screen,
                     world_position: v1.world_position,
                 };
@@ -378,14 +402,16 @@ impl Renderer {
                 let v2_rasterizer = VertexOutput {
                     position: v2.position,
                     normal: normal,
+                    color: v2.color,
                     texcoord: v2.texcoord,
+                    uv_lightmap: v2.uv_lightmap,
                     screen_position: v2_screen,
                     world_position: v2.world_position,
                 };
 
                 // Send to the rasterizer
                 if self.settings.naive_rasterization {
-                    self.rasterize_triangle_naive(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer, texture);
+                    self.rasterize_triangle_naive(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer, texture, &lightmap, &lightmap_size);
                 }
                 else {
                     unreachable!();
@@ -395,7 +421,7 @@ impl Renderer {
         }
     }
 
-    fn texture_sample(texture: &Texture, uv: Vec2) -> u32 {
+    fn texture_sample(texture: &Texture, uv: Vec2) -> Color {
         let mip_level = 0;
 
         let mip_width: u32 = texture.width >> mip_level;
@@ -403,24 +429,78 @@ impl Renderer {
 
         let wrap_uv = uv - uv.floor();
 
-        let mip_level_data: &Vec<u8> = &texture.data[0];
+        let mip_level_data: &Vec<u8> = &texture.data[mip_level];
         let coords = ivec2(
             (wrap_uv.x * (mip_width - 1) as f32) as i32,
             (wrap_uv.y * (mip_height - 1) as f32) as i32,
         );
 
         let indexed_color: u8 = mip_level_data[(coords.y as u32 * mip_width + coords.x as u32) as usize];
-        texture.palette[indexed_color as usize]
+        Color::from_u32(texture.palette[indexed_color as usize])
     }
 
-    fn pixel_shader(v: &VertexOutput, texture: &Texture) -> u32 {
-        // let light_dir = Vec3::new(0.0, -1.0, -1.0);
-        // let intensity = v.normal.dot(light_dir);
-        // let c: Color = Color::from_f32(1.0 * intensity, 1.0 * intensity, 1.0 * intensity, 1.0 * intensity);
+    fn sample_lightmap_point(data: &[u8], size: &IVec2, uv: &Vec2) -> u8 {
+        let coords = ivec2(
+            (uv.x * (size.x - 1) as f32) as i32,
+            (uv.y * (size.y - 1) as f32) as i32,
+        );
 
-        // let c: Color = Color::from_f32(v.normal.x.abs(), v.normal.y.abs(), v.normal.z.abs(), 1.0);
+        data[(coords.y * size.x + coords.x) as usize]
+    }
 
-        Self::texture_sample(texture, v.texcoord)
+    fn sample_lightmap_bilinear(data: &[u8], size: &IVec2, uv: &Vec2) -> u8 {
+        // let clamp_uv = uv - uv.floor();
+        let clamp_uv = uv.clamp(Vec2::splat(0.001), Vec2::splat(0.999));
+        // let clamp_uv = uv;
+
+        // Convert UV to lightmap space (texel indices)
+        let x = clamp_uv.x * (size.x - 1) as f32;
+        let y = clamp_uv.y * (size.y - 1) as f32;
+
+        // Compute integer texel coordinates (clamping to avoid out-of-bounds)
+        let x0 = x.floor() as i32;
+        let y0 = y.floor() as i32;
+        let x1 = (x0 + 1).clamp(0, size.x - 1);
+        let y1 = (y0 + 1).clamp(0, size.y - 1);
+
+        // Get fractional parts for interpolation
+        let wu = x - x0 as f32;
+        let wv = y - y0 as f32;
+
+        // Fetch the four nearest texels (handling edge cases by clamping)
+        let i00 = (y0 * size.x + x0) as usize;
+        let i10 = (y0 * size.x + x1) as usize;
+        let i01 = (y1 * size.x + x0) as usize;
+        let i11 = (y1 * size.x + x1) as usize;
+
+        let l00 = data[i00] as f32 / 255.0;
+        let l10 = data[i10] as f32 / 255.0;
+        let l01 = data[i01] as f32 / 255.0;
+        let l11 = data[i11] as f32 / 255.0;
+
+        // Bilinear interpolation
+        let lerp_x0 = l00 * (1.0 - wu) + l10 * wu;
+        let lerp_x1 = l01 * (1.0 - wu) + l11 * wu;
+        let final_light = lerp_x0 * (1.0 - wv) + lerp_x1 * wv;
+
+        (final_light * 255.0) as u8
+    }
+
+    fn pixel_shader(v: &VertexOutput, texture: &Texture, lightmap: &[u8], lightmap_size: &IVec2) -> Vec4 {
+        let tex = Self::texture_sample(texture, v.texcoord).get_vec();
+
+        let mut light: Vec3 = Vec3::ZERO;
+
+        if lightmap.len() > 0 {
+            let brightness = Self::sample_lightmap_bilinear(&lightmap, &lightmap_size, &v.uv_lightmap);
+            light = vec3(brightness as f32 / 255.0, brightness as f32 / 255.0, brightness as f32 / 255.0); // - v.color.xyz();
+        }
+        else {
+            light = Vec3::ONE - v.color.xyz();
+        }
+
+        (tex.xyz() * light).extend(1.0)
+        // tex.xyz().extend(1.0)
     }
 
     fn edge_function(v0: IVec2, v1: IVec2, p: IVec2) -> i32 {
@@ -667,7 +747,15 @@ impl Renderer {
         }
     }*/
 
-    fn rasterize_triangle_naive(&mut self, v0: &VertexOutput, v1: &VertexOutput, v2: &VertexOutput, texture: &Texture) {
+    fn rasterize_triangle_naive(
+        &mut self,
+        v0: &VertexOutput,
+        v1: &VertexOutput,
+        v2: &VertexOutput,
+        texture: &Texture,
+        lightmap: &[u8],
+        lightmap_size: &IVec2,
+    ) {
         self.stats.rasterizer_input += 1;
 
         let iv0 = IVec2::new(v0.screen_position.x.ceil() as i32, v0.screen_position.y.ceil() as i32);
@@ -715,6 +803,10 @@ impl Renderer {
         let texcoord1 = v1.texcoord / v1.screen_position.w;
         let texcoord2 = v2.texcoord / v2.screen_position.w;
 
+        let uv_lightmap0 = v0.uv_lightmap / v0.screen_position.w;
+        let uv_lightmap1 = v1.uv_lightmap / v1.screen_position.w;
+        let uv_lightmap2 = v2.uv_lightmap / v2.screen_position.w;
+
         for y in min_y..=max_y {
             // initialize barycentric coords
             // let mut w0 = w0_min;
@@ -755,11 +847,15 @@ impl Renderer {
                     let interpolated_position = l0 * v0.position + l1 * v1.position + l2 * v2.position;
                     let interpolated_normal = l0 * v0.normal + l1 * v1.normal + l2 * v2.normal;
                     let interpolated_texcoord = (l0 * texcoord0 + l1 * texcoord1 + l2 * texcoord2) * pixel_w;
+                    let interpolated_uv_lightmap = (l0 * uv_lightmap0 + l1 * uv_lightmap1 + l2 * uv_lightmap2) * pixel_w;
+                    let interpolated_color = l0 * v0.color + l1 * v1.color + l2 * v2.color;
 
                     let v = VertexOutput {
                         screen_position: interpolated_screen,
                         position: interpolated_position,
+                        color: interpolated_color,
                         texcoord: interpolated_texcoord,
+                        uv_lightmap: interpolated_uv_lightmap,
                         normal: interpolated_normal,
                         world_position: Vec3::ZERO,
                     };
@@ -768,9 +864,9 @@ impl Renderer {
                     self.stats.pixels_drawn += 1;
 
                     // run the "pixel shader" for this pixel
-                    let c = Self::pixel_shader(&v, texture);
+                    let c = Self::pixel_shader(&v, texture, lightmap, lightmap_size);
 
-                    self.back_buffer[pixel_index] = c;
+                    self.back_buffer[pixel_index] = Color::from_vec4(c).to_u32();
                     self.depth_buffer[pixel_index] = pixel_z;
                 }
 

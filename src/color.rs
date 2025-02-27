@@ -6,6 +6,10 @@ pub struct Color {
 }
 
 impl Color {
+    pub fn get_vec(&self) -> Vec4 { self.rgba }
+    
+    pub fn from_vec4(rgba: Vec4) -> Self { Color { rgba } }
+    
     pub fn from_f32(r: f32, g: f32, b: f32, a: f32) -> Color {
         Self {
             rgba: Vec4::new(r, g, b, a)

@@ -1,12 +1,12 @@
 use crate::renderer::{Renderer, Texture, Vertex};
 use byteorder::{LittleEndian, ReadBytesExt};
-use glam::{vec2, Mat4, Vec3};
+use glam::{ivec2, vec2, Mat4, Vec3};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use std::{io, ptr};
-use std::collections::HashMap;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -123,26 +123,22 @@ struct BSPEdge {
 
 #[repr(C)]
 struct Surface {
-    vector_s: Vec3,
-    dist_s: f32,
-    vector_t: Vec3,
-    dist_t: f32,
+    u_axis: Vec3,
+    u_offset: f32,
+    v_axis: Vec3,
+    v_offset: f32,
     texture_id: u32,
     animated: u32,
 }
 
 #[repr(C)]
 #[derive(Debug)]
-struct  TextureHeader             // Mip Texture
+struct TextureHeader             // Mip Texture
 {
     name: [u8;16],           // Name of the texture.
     width: u32,              // width of picture, must be a multiple of 8
     height: u32,             // height of picture, must be a multiple of 8
-    offsets: [u32; 4],
-    // offset1: u32,            // offset to u_char Pix[width   * height]
-    // offset2: u32,            // offset to u_char Pix[width/2 * height/2]
-    // offset4: u32,            // offset to u_char Pix[width/4 * height/4]
-    // offset8: u32,            // offset to u_char Pix[width/8 * height/8]
+    offsets: [u32; 4],       // mip0 (w*h) -> mip1 (1/2) -> mip2 (1/4) -> mip4 (1/8)
 }
 
 #[derive(Debug, Default)]
@@ -169,7 +165,11 @@ pub struct Level {
     vertices: Vec<Vec3>,
     texture_infos: Vec<Surface>,
     textures: Vec<Texture>,
+    lightmaps: Vec<u8>,
     entities: Vec<Entity>,
+
+    current_leaf_index: u16,
+    visible_leafs: Vec<u16>,
 }
 
 
@@ -204,6 +204,7 @@ impl Level {
         let texture_infos: Vec<Surface> = Self::read_lump(&mut file, &bsp_header.texinfo).expect("Failed to read texture infos");
 
         let textures: Vec<Texture> = Self::read_textures(&mut file, &bsp_header.textures).expect("Failed to read textures");
+        let lightmaps: Vec<u8> = Self::read_lump(&mut file, &bsp_header.lightmaps).expect("Failed to read lightmaps");
 
         // let textures: Vec<BSelf::read_lump(&mut file, &bsp_header.textures).expect("Failed to read textures lump");
 
@@ -213,18 +214,21 @@ impl Level {
 
         Ok(Self {
             _bsp_models: bsp_models,
-            bsp_nodes: bsp_nodes,
-            bsp_planes: bsp_planes,
-            bsp_leafs: bsp_leafs,
-            bsp_faces: bsp_faces,
-            bsp_lfaces: bsp_lfaces,
-            bsp_edges: bsp_edges,
+            bsp_nodes,
+            bsp_planes,
+            bsp_leafs,
+            bsp_faces,
+            bsp_lfaces,
+            bsp_edges,
             bsp_ledges: list_edges,
-            vertices: vertices,
-            vislist: vislist,
-            texture_infos: texture_infos,
+            vertices,
+            vislist,
+            texture_infos,
             textures,
+            lightmaps,
             entities,
+            current_leaf_index: 0,
+            visible_leafs: vec![],
         })
     }
 
@@ -238,26 +242,28 @@ impl Level {
         None
     }
 
-    pub fn draw(&self, w: &Mat4, wvp: &Mat4, position: Vec3, renderer: &mut Renderer) {
-        // TODO: This potentially can be skipped unless the player moves to another leaf
+    pub fn update_visiblity(&mut self, position: Vec3) {
+        let current_leaf_index = self.find_leaf(0, position);
+        if current_leaf_index == self.current_leaf_index || current_leaf_index == 0 {
+            return;
+        }
 
-        let leaf = self.find_leaf(0, position);
+        let start_leaf = &self.bsp_leafs[current_leaf_index as usize];
 
-        let mut visible_leafs: Vec<usize> = vec![];
-
-        let num_leaves = self.bsp_leafs.len();
+        self.visible_leafs = vec![];
+        let num_leaves = self.bsp_leafs.len() as u16;
 
         // leaf.vislist marks the offset where the visibility list for this leaf starts
-        let mut v = leaf.vislist as usize;
+        let mut v = start_leaf.vislist as usize;
 
-        let mut l = 1;
+        let mut l: u16 = 1;
         while l < num_leaves
         {
             if self.vislist[v] == 0
             {
                 // if we read a 0, the next byte tells us how many bytes to skip (RLE)
                 // each bit represents a leaf, so we skip that amount of leaf indices (L)
-                l += 8 * self.vislist[v + 1] as usize;
+                l += 8 * self.vislist[v + 1] as u16;
                 v += 1;
             }
             else
@@ -266,7 +272,7 @@ impl Level {
                 for bit in 0..=7 {
                     if self.vislist[v] & (1u8 << bit) != 0 {
                         if l < num_leaves {
-                            visible_leafs.push(l);
+                            self.visible_leafs.push(l);
                         }
                     }
                     l += 1;
@@ -275,13 +281,11 @@ impl Level {
 
             v += 1;
         }
+    }
 
-        // self.bsp_leafs.iter().for_each(|leaf| {
-        //     self.render_leaf(leaf, &w, &wvp, renderer);
-        // });
-
-        visible_leafs.iter().for_each(|l| {
-            let leaf = &self.bsp_leafs[*l];
+    pub fn draw(&self, w: &Mat4, wvp: &Mat4, renderer: &mut Renderer) {
+        self.visible_leafs.iter().for_each(|l| {
+            let leaf = &self.bsp_leafs[*l as usize];
             self.render_leaf(leaf, &w, &wvp, renderer);
         });
     }
@@ -424,7 +428,7 @@ impl Level {
         Ok(entities)
     }
 
-    fn find_leaf(&self, node_index: u16, position: Vec3) -> &BSPLeaf {
+    fn find_leaf(&self, node_index: u16, position: Vec3) -> u16 {
         let mut n = node_index;
         while n & 0x8000 == 0 {
             let node = &self.bsp_nodes[n as usize];
@@ -440,19 +444,63 @@ impl Level {
             }
         }
 
-        let leaf_index = !n;
+        !n
+    }
 
-        &self.bsp_leafs[leaf_index as usize]
+    fn find_face_dimensions(&self, face: &BSPFace) -> (f32, f32, f32, f32) {
+        let mut min_u: f32 = f32::MAX;
+        let mut min_v: f32 = f32::MAX;
+        let mut max_u: f32 = f32::MIN;
+        let mut max_v: f32 = f32::MIN;
+
+        let tex_info: &Surface = &self.texture_infos[face.texinfo_id as usize];
+
+        for edge_list_index in face.ledge_id..(face.ledge_id + (face.ledge_num as i32)) {
+            let edge_index = self.bsp_ledges[edge_list_index as usize];
+
+            let vertex: Vec3;
+            if edge_index >= 0 {
+                let edge = &self.bsp_edges[edge_index as usize];
+                vertex = self.vertices[edge.vertex0 as usize];
+            } else {
+                let edge = &self.bsp_edges[-edge_index as usize];
+                vertex = self.vertices[edge.vertex1 as usize];
+            }
+
+            let u = vertex.dot(tex_info.u_axis) + tex_info.u_offset;
+            let v = vertex.dot(tex_info.v_axis) + tex_info.v_offset;
+
+            let floor_u = u.floor();
+            let floor_v = v.floor();
+
+            min_u = min_u.min(floor_u);
+            min_v = min_v.min(floor_v);
+            max_u = max_u.max(floor_u);
+            max_v = max_v.max(floor_v);
+        }
+
+        (min_u, min_v, max_u, max_v)
     }
 
     fn render_leaf(&self, leaf: &BSPLeaf, w: &Mat4, wvp: &Mat4, renderer: &mut Renderer) {
-        for face_list_index in leaf.lface_id..(leaf.lface_id + leaf.lface_num) {
+        let face_list_offset = leaf.lface_id;
+        let face_list_num = face_list_offset + leaf.lface_num;
+
+        for face_list_index in face_list_offset..face_list_num {
             let face_index: u16 = self.bsp_lfaces[face_list_index as usize];
             let face: &BSPFace = &self.bsp_faces[face_index as usize];
             let tex_info: &Surface = &self.texture_infos[face.texinfo_id as usize];
             let texture: &Texture = &self.textures[tex_info.texture_id as usize];
 
-            // let mut face_vertices : Vec<Vec3> = Vec::new();
+            // Calculate min u/v and max u/v
+            let (min_u, min_v, max_u, max_v) = self.find_face_dimensions(face);
+
+            // Calculate lightmap size
+            let lightmap_size = ivec2(
+                ((max_u / 16.0).ceil() - (min_u / 16.0).floor() + 1.0) as i32,
+                ((max_v / 16.0).ceil() - (min_v / 16.0).floor() + 1.0) as i32
+            );
+
             let mut face_vertices: Vec<Vertex> = vec![];
             let mut face_indices : Vec<u32> = Vec::new();
 
@@ -469,15 +517,27 @@ impl Level {
                     vertex = self.vertices[edge.vertex1 as usize];
                 }
 
-                let uv = vec2(
-                    (vertex.dot(tex_info.vector_s) + tex_info.dist_s) / texture.width as f32,
-                    (vertex.dot(tex_info.vector_t) + tex_info.dist_t) / texture.height as f32,
+                let u = vertex.dot(tex_info.u_axis) + tex_info.u_offset;
+                let v = vertex.dot(tex_info.v_axis) + tex_info.v_offset;
+
+                let uv_texture = vec2(
+                    u / texture.width as f32,
+                    v / texture.height as f32,
+                );
+
+                let color = Vec3::splat((face.baselight as f32) / 255.0).extend(1.0);
+
+                let uv_lightmap = vec2(
+                    (u - min_u) / (max_u - min_u),
+                    (v - min_v) / (max_v - min_v),
                 );
 
                 face_vertices.push(Vertex {
                     position: vertex,
                     normal: Vec3::ZERO,
-                    tex_coord: uv,
+                    color,
+                    tex_coord: uv_texture,
+                    uv_lightmap,
                 });
             }
 
@@ -488,7 +548,28 @@ impl Level {
                 face_indices.push((i - 1) as u32);
             }
 
-            renderer.draw(&face_vertices, &face_indices, w, wvp, texture);
+            match face.typelight {
+                0 => { // has lightmap
+                    assert!(face.typelight == 0 && face.lightmap != -1);
+
+                    let lightmap_data: &[u8] = &self.lightmaps[face.lightmap as usize..(face.lightmap + lightmap_size.x * lightmap_size.y) as usize];
+                    renderer.draw(&face_vertices, &face_indices, w, wvp, texture, lightmap_data, &lightmap_size);
+                },
+                1 => { // no lightmap
+                    assert!(face.typelight == 1 && face.lightmap == -1);
+
+                    let lightmap_data: &[u8] = &[]; // Declare slice reference
+                    let lightmap_size = ivec2(0,0);
+
+                    renderer.draw(&face_vertices, &face_indices, w, wvp, texture, lightmap_data, &lightmap_size);
+                },
+                _ => {
+                    let lightmap_data: &[u8] = &[]; // Declare slice reference
+                    let lightmap_size = ivec2(0,0);
+
+                    renderer.draw(&face_vertices, &face_indices, w, wvp, texture, lightmap_data, &lightmap_size);
+                }
+            }
         }
     }
 }

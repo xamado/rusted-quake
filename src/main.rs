@@ -102,7 +102,7 @@ fn main() {
 
     // load our test obj file
     let model = Model::load("data/plane.obj").expect("Failed to load model");
-    let level = Level::load("data/e1m2.bsp").expect("Failed to load level");
+    let mut level = Level::load("maps/e1m1_remaster.bsp").expect("Failed to load level");
 
     let entity_player_start = level.get_entity("info_player_start");
 
@@ -118,8 +118,6 @@ fn main() {
         .and_then(|e| e.get_property("angle"))
         .map(|angle| angle.parse().unwrap())
         .unwrap_or(0.0);
-
-    println!("Player spawn: {:?}", player_spawn);
 
     let mut settings = GameSettings {
         camera_speed: 200.0,
@@ -177,7 +175,8 @@ fn main() {
             let wvp = proj * view * world;
 
             let player_position = camera.position;
-            level.draw(&world, &wvp, player_position, &mut renderer);
+            level.update_visiblity(player_position);
+            level.draw(&world, &wvp, &mut renderer);
         }
 
         let mut buffer: Vec<u32>;
