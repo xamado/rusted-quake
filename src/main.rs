@@ -3,19 +3,24 @@ mod level;
 mod camera;
 mod color;
 mod renderer;
+mod engine;
+mod backbuffer;
+mod rect;
 
 use crate::color::Color;
 use crate::level::Level;
 use crate::renderer::{Renderer, RendererSettings};
+use crate::engine::{DebugStats, Engine};
+
 use camera::Camera;
 use glam::{vec3, Mat4, Quat, Vec3};
 use minifb::{Key, Scale, Window, WindowOptions};
 use minifb_fonts::font6x8;
-use model::Model;
 use std::time::Instant;
+use crate::backbuffer::BackBuffer;
 
-const SCREEN_WIDTH: usize = 1920/2;
-const SCREEN_HEIGHT: usize = 1080/2;
+const SCREEN_WIDTH: u32 = 1920/2;
+const SCREEN_HEIGHT: u32 = 1080/2;
 
 struct GameSettings {
     pub camera_speed: f32,
@@ -74,15 +79,27 @@ fn process_input(window: &Window, elapsed_seconds: f32, game_settings: &mut Game
 }
 
 fn main() {
+    // create our renderer
+    let mut renderer = Renderer::new(RendererSettings {
+        naive_rasterization: true,
+        tile_size: 16,
+        wireframe: false,
+        ..RendererSettings::default()
+    });
+
+    let mut engine: Engine = Engine::new(renderer);
+
+    let mut stats: DebugStats = DebugStats::default();
+
     // create a text renderer
     let text_color: Color = Color::from_u8(255,255,255,255);
-    let text = font6x8::new_renderer(SCREEN_WIDTH, SCREEN_HEIGHT, text_color.to_u32());
+    let text = font6x8::new_renderer(SCREEN_WIDTH as usize, SCREEN_HEIGHT as usize, text_color.to_u32());
 
     // create a window and buffer
     let mut window = Window::new(
         "RustedQuake",
-        SCREEN_WIDTH,
-        SCREEN_HEIGHT,
+        SCREEN_WIDTH as usize,
+        SCREEN_HEIGHT as usize,
         WindowOptions {
             scale: Scale::X2,
             ..WindowOptions::default()
@@ -91,17 +108,9 @@ fn main() {
         panic!("{}", e);
     });
 
-    // create our renderer
-    let renderer_settings = RendererSettings {
-        naive_rasterization: true,
-        tile_size: 16,
-        wireframe: false,
-        ..RendererSettings::default()
-    };
-    let mut renderer = Renderer::new(SCREEN_WIDTH, SCREEN_HEIGHT, renderer_settings);
 
     // load our test obj file
-    let model = Model::load("data/plane.obj").expect("Failed to load model");
+    // let model = Model::load("data/plane.obj").expect("Failed to load model");
     let mut level = Level::load("maps/e1m1_remaster.bsp").expect("Failed to load level");
 
     let entity_player_start = level.get_entity("info_player_start");
@@ -137,16 +146,20 @@ fn main() {
         zfar: 10000.0,
     };
 
+    let mut buffer = BackBuffer::new(SCREEN_WIDTH, SCREEN_HEIGHT);
+
     let mut instant = Instant::now();
 
     // run the main-loop
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        stats.clear();
+
         // fps counter
         let elapsed_seconds = instant.elapsed().as_secs_f32();
         instant = Instant::now();
 
         // clear our buffer to start rendering
-        renderer.clear();
+        engine.renderer().clear(&mut buffer);
 
         // process input
         process_input(&window, elapsed_seconds, &mut settings, &mut camera);
@@ -155,13 +168,13 @@ fn main() {
         let proj = camera.get_projection_mat();
 
         {
-            let world = Mat4::from_scale_rotation_translation(
-                Vec3::new(10.0, 10.0, 10.0),
-                Quat::IDENTITY,
-                Vec3::new(0.0, 0.0, 0.0)
-            );
+            // let world = Mat4::from_scale_rotation_translation(
+            //     Vec3::new(10.0, 10.0, 10.0),
+            //     Quat::IDENTITY,
+            //     Vec3::new(0.0, 0.0, 0.0)
+            // );
 
-            let wvp = proj * view * world;
+            // let wvp = proj * view * world;
             // renderer.draw(&model.vertices, &model.indices, &world, &wvp);
         }
 
@@ -176,34 +189,33 @@ fn main() {
 
             let player_position = camera.position;
             level.update_visiblity(player_position);
-            level.draw(&world, &wvp, &mut renderer);
+            level.draw(&engine, &mut stats, &mut buffer, player_position, &world, &wvp);
         }
 
-        let mut buffer: Vec<u32>;
+        let mut buf: Vec<u32>;
 
         if settings.draw_depth {
-            let depth: &[f32] = renderer.get_depth_buffer();
-            buffer = depth.iter()
+            let depth: &[f32] = buffer.get_depth_buffer();
+            buf = depth.iter()
                 .map(|&x| (float_to_u32_color(x)))
                 .collect();
         }
         else {
-            buffer = Vec::from(renderer.get_back_buffer());
+            buf = Vec::from(buffer.get_back_buffer());
         }
 
         // draw some informative text
         let text_frame_time = format!("frame: {}ms", (elapsed_seconds * 1000.0) as u32);
-        text.draw_text(&mut buffer, 10, 20, text_frame_time.as_str());
+        text.draw_text(&mut buf, 10, 20, text_frame_time.as_str());
         let text_camera_position = format!("camera: {}", camera.position);
-        text.draw_text(&mut buffer, 10, 40, text_camera_position.as_str());
+        text.draw_text(&mut buf, 10, 40, text_camera_position.as_str());
 
         if settings.show_stats {
-            let stats = renderer.get_stats();
             let str_stats = format!("{:#?}", stats) // Pretty-prints with new lines
                 .trim_start_matches("RendererStats {\n") // Remove struct name
                 .trim_end_matches("\n}") // Remove closing brace
                 .replace("    ", ""); // Remove excess indentation
-            text.draw_text(&mut buffer, 10, 80, str_stats.as_str());
+            text.draw_text(&mut buf, 10, 80, str_stats.as_str());
 
             // let mut y_offset = 100;
             // for (key, value) in &stats.debug_values {
@@ -214,7 +226,7 @@ fn main() {
         }
 
         window
-            .update_with_buffer(buffer.as_slice(), SCREEN_WIDTH, SCREEN_HEIGHT)
+            .update_with_buffer(buf.as_slice(), buffer.get_width() as usize, buffer.get_height() as usize)
             .unwrap();
     }
 }

@@ -1,8 +1,9 @@
-use glam::{ivec2, vec3, vec4, IVec2, Mat4, Vec2, Vec3, Vec4, Vec4Swizzles};
-use rand::rngs::StdRng;
-use rand::SeedableRng;
-use std::sync::Arc;
+use crate::backbuffer::BackBuffer;
 use crate::color::Color;
+use crate::engine::{DebugStats, Engine};
+use crate::rect::IRect;
+use glam::{ivec2, vec3, vec4, IVec2, Mat4, Vec2, Vec3, Vec4, Vec4Swizzles};
+use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Vertex {
@@ -44,25 +45,6 @@ impl Default for Vertex {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct RendererStats {
-    pixels_drawn: u32,
-    triangles_input: u32,
-    triangles_after_clipping: u32,
-    triangles_clipping_extra: u32,
-    rasterizer_input: u32,
-    pub debug_values: Vec<(String, String)>,
-}
-
-impl RendererStats {
-    pub fn clear(&mut self) {
-        *self = Self::default();
-    }
-
-    pub fn push_stat(&mut self, key: &str, value: &str) {
-        self.debug_values.push((key.to_string(), value.to_string()));
-    }
-}
 
 pub struct RendererSettings {
     pub naive_rasterization: bool,
@@ -81,55 +63,22 @@ impl Default for RendererSettings {
 }
 
 pub struct Renderer {
-    screen_width: usize,
-    screen_height: usize,
-    back_buffer: Vec<u32>,
-    depth_buffer: Vec<f32>,
-    stats: RendererStats,
     settings: RendererSettings,
-    rng: StdRng,
 }
 
 impl Renderer {
-    pub fn new(screen_width: usize, screen_height: usize, settings: RendererSettings) -> Self {
-        let back_buffer: Vec<u32> = vec![0; screen_width * screen_height];
-        let depth_buffer = vec![0.0; screen_width * screen_height];
-
-        let rng = StdRng::seed_from_u64(12345);
-
+    pub fn new(settings: RendererSettings) -> Self {
         Self {
-            screen_width,
-            screen_height,
-            back_buffer,
-            depth_buffer,
-            stats: RendererStats::default(),
             settings,
-            rng,
         }
     }
 
-    pub fn clear(&mut self) {
-        self.back_buffer.fill(0);
-        self.depth_buffer.fill(1.0);
-
-        self.stats.clear();
-
-        self.rng = StdRng::seed_from_u64(12345);
-    }
-
-    pub fn get_stats(&self) -> &RendererStats {
-        &self.stats
+    pub fn clear(&self, buffer: &mut BackBuffer) {
+        buffer.get_back_buffer().fill(0);
+        buffer.get_depth_buffer().fill(1.0);
     }
 
     pub fn get_settings(&self) -> &RendererSettings { &self.settings }
-
-    pub fn get_back_buffer(&self) -> &[u32] {
-        &self.back_buffer
-    }
-
-    pub fn get_depth_buffer(&self) -> &[f32] {
-        &self.depth_buffer
-    }
 
     // The Vertex Shader Stage is responsible for transforming the object space vertices
     // all the way into clip-space.
@@ -282,7 +231,9 @@ impl Renderer {
     }
 
     pub fn draw(
-        &mut self,
+        &self,
+        stats: &mut DebugStats,
+        back_buffer: &mut BackBuffer,
         vertex_buffer: &Vec<Vertex>,
         index_buffer: &Vec<u32>,
         w: &Mat4,
@@ -291,22 +242,27 @@ impl Renderer {
         lightmap: &[u8],
         lightmap_size: &IVec2,
     ) {
-        // Vertex Shader Stage -> Transform our vertices to clip space
+        let screen_rect = IRect {
+            min: ivec2(0, 0),
+            max: ivec2(back_buffer.get_width() as i32, back_buffer.get_height() as i32)
+        };
+
+        // --> Vertex Shader Stage -> Transform our vertices to clip space
         let vertex_buffer_clip: Vec<VertexOutput> = self.vertex_stage(&vertex_buffer, &wvp, &w);
 
         // draw indices as triangles, grab triples at a time
         for tri in index_buffer.chunks_exact(3) {
-            self.stats.triangles_input += 1;
+            stats.triangles_input += 1;
 
             let clip_v0 = &vertex_buffer_clip[tri[0] as usize];
             let clip_v1 = &vertex_buffer_clip[tri[1] as usize];
             let clip_v2 = &vertex_buffer_clip[tri[2] as usize];
 
-            // clip input triangles, output could be 1 or 2 triangles
+            // --> Clip: clip input triangles, output could be 1 or 2 triangles
             let triangles = Self::clip_triangle(clip_v0, clip_v1, clip_v2);
 
-            self.stats.triangles_after_clipping += triangles.len() as u32;
-            self.stats.triangles_clipping_extra += triangles.len().saturating_sub(1) as u32;
+            stats.triangles_after_clipping += triangles.len() as u32;
+            stats.triangles_clipping_extra += triangles.len().saturating_sub(1) as u32;
 
             for triangle_verts in triangles {
                 // let normal = (triangle_verts[1].world_position - triangle_verts[0].world_position)
@@ -344,22 +300,22 @@ impl Renderer {
 
                 // viewport transformation
                 let v0_screen = vec4(
-                    (v0_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
-                    (1.0 - v0_ndc.y) * 0.5 * self.screen_height as f32,
+                    (v0_ndc.x + 1.0) * 0.5 * screen_rect.max.x as f32,
+                    (1.0 - v0_ndc.y) * 0.5 * screen_rect.max.y as f32,
                     v0_ndc.z,
                     v0.position.w,
                 );
 
                 let v1_screen = vec4(
-                    (v1_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
-                    (1.0 - v1_ndc.y) * 0.5 * self.screen_height as f32,
+                    (v1_ndc.x + 1.0) * 0.5 * screen_rect.max.x as f32,
+                    (1.0 - v1_ndc.y) * 0.5 * screen_rect.max.y as f32,
                     v1_ndc.z,
                     v1.position.w,
                 );
 
                 let v2_screen = vec4(
-                    (v2_ndc.x + 1.0) * 0.5 * self.screen_width as f32,
-                    (1.0 - v2_ndc.y) * 0.5 * self.screen_height as f32,
+                    (v2_ndc.x + 1.0) * 0.5 * screen_rect.max.x as f32,
+                    (1.0 - v2_ndc.y) * 0.5 * screen_rect.max.y as f32,
                     v2_ndc.z,
                     v2.position.w,
                 );
@@ -367,15 +323,15 @@ impl Renderer {
                 // guard-band clipping
                 let guardband = 8192.0 * 4.0;
                 if v0_screen.x < -guardband || v0_screen.x > guardband || v0_screen.y < -guardband || v0_screen.y > guardband {
-                    self.stats.push_stat("clipped by guardband", "v0");
+                    stats.push_stat("clipped by guardband", "v0");
                     continue; // clipped
                 }
                 if v1_screen.x < -guardband || v1_screen.x > guardband || v1_screen.y < -guardband || v1_screen.y > guardband {
-                    self.stats.push_stat("clipped by guardband", "v1");
+                    stats.push_stat("clipped by guardband", "v1");
                     continue; // clipped
                 }
                 if v2_screen.x < -guardband || v2_screen.x > guardband || v2_screen.y < -guardband || v2_screen.y > guardband {
-                    self.stats.push_stat("clipped by guardband", "v2");
+                    stats.push_stat("clipped by guardband", "v2");
                     continue; // clipped
                 }
 
@@ -411,12 +367,14 @@ impl Renderer {
 
                 // Send to the rasterizer
                 if self.settings.naive_rasterization {
-                    self.rasterize_triangle_naive(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer, texture, &lightmap, &lightmap_size);
+                    self.rasterize_triangle_naive(stats, back_buffer, &v2_rasterizer, &v1_rasterizer, &v0_rasterizer, texture, &lightmap, &lightmap_size);
                 }
                 else {
                     unreachable!();
                     // self.rasterize_triangle(&v2_rasterizer, &v1_rasterizer, &v0_rasterizer);
                 }
+
+                stats.triangles_rasterized += 1;
             }
         }
     }
@@ -489,18 +447,15 @@ impl Renderer {
     fn pixel_shader(v: &VertexOutput, texture: &Texture, lightmap: &[u8], lightmap_size: &IVec2) -> Vec4 {
         let tex = Self::texture_sample(texture, v.texcoord).get_vec();
 
-        let mut light: Vec3 = Vec3::ZERO;
-
-        if lightmap.len() > 0 {
+        let light: Vec3 = if lightmap.len() > 0 {
             let brightness = Self::sample_lightmap_bilinear(&lightmap, &lightmap_size, &v.uv_lightmap);
-            light = vec3(brightness as f32 / 255.0, brightness as f32 / 255.0, brightness as f32 / 255.0); // - v.color.xyz();
+            vec3(brightness as f32 / 255.0, brightness as f32 / 255.0, brightness as f32 / 255.0) * v.color.xyz()
         }
         else {
-            light = Vec3::ONE - v.color.xyz();
-        }
+            v.color.xyz()
+        };
 
         (tex.xyz() * light).extend(1.0)
-        // tex.xyz().extend(1.0)
     }
 
     fn edge_function(v0: IVec2, v1: IVec2, p: IVec2) -> i32 {
@@ -748,7 +703,9 @@ impl Renderer {
     }*/
 
     fn rasterize_triangle_naive(
-        &mut self,
+        &self,
+        stats: &mut DebugStats,
+        back_buffer: &mut BackBuffer,
         v0: &VertexOutput,
         v1: &VertexOutput,
         v2: &VertexOutput,
@@ -756,7 +713,7 @@ impl Renderer {
         lightmap: &[u8],
         lightmap_size: &IVec2,
     ) {
-        self.stats.rasterizer_input += 1;
+        stats.rasterizer_input += 1;
 
         let iv0 = IVec2::new(v0.screen_position.x.ceil() as i32, v0.screen_position.y.ceil() as i32);
         let iv1 = IVec2::new(v1.screen_position.x.ceil() as i32, v1.screen_position.y.ceil() as i32);
@@ -771,8 +728,8 @@ impl Renderer {
         // clip it against screen
         min_x = min_x.max(0);
         min_y = min_y.max(0);
-        max_x = max_x.min(self.screen_width as i32 - 1);
-        max_y = max_y.min(self.screen_height as i32 - 1);
+        max_x = max_x.min((back_buffer.get_width() - 1) as i32);
+        max_y = max_y.min((back_buffer.get_height() - 1) as i32);
         
         // calculate the area of the triangle (2x)
         let area: i32 = Self::edge_function(iv0, iv1, iv2);
@@ -823,7 +780,7 @@ impl Renderer {
 
                 // skip if outside the triangle
                 if (w0 | w1 | w2) >= 0 {
-                    let pixel_index: usize = y as usize * self.screen_width + x as usize;
+                    let pixel_index: usize = y as usize * (back_buffer.get_width() as usize) + x as usize;
 
                     // normalize our lambdas and move to floating point math
                     let l0 = w0 as f32 / area as f32;
@@ -834,12 +791,13 @@ impl Renderer {
                     let pixel_z = 1.0 / (inv_z0 * l0 + inv_z1 * l1 + inv_z2 * l2);
 
                     // test against our z-buffer
-                    let zbuffer_value = self.depth_buffer[pixel_index];
+                    let zbuffer_value = back_buffer.get_depth_buffer()[pixel_index];
                     if pixel_z > zbuffer_value {
+                        stats.pixels_failed_z_test += 1;
                         continue;
                     }
 
-                    let inv_w = (l0 / v0.position.w + l1 / v1.position.w + l2 / v2.position.w);
+                    let inv_w = l0 / v0.position.w + l1 / v1.position.w + l2 / v2.position.w;
                     let pixel_w = 1.0 / inv_w;
 
                     // now we need to calculate the interpolated vertex attributes... fun!
@@ -861,13 +819,17 @@ impl Renderer {
                     };
 
                     // inc stats
-                    self.stats.pixels_drawn += 1;
+                    stats.pixels_drawn += 1;
+
+                    if back_buffer.get_back_buffer()[pixel_index] != 0 {
+                        stats.pixel_overdraw += 1;
+                    }
 
                     // run the "pixel shader" for this pixel
                     let c = Self::pixel_shader(&v, texture, lightmap, lightmap_size);
+                    back_buffer.get_back_buffer()[pixel_index] = Color::from_vec4(c).to_u32();
 
-                    self.back_buffer[pixel_index] = Color::from_vec4(c).to_u32();
-                    self.depth_buffer[pixel_index] = pixel_z;
+                    back_buffer.get_depth_buffer()[pixel_index] = pixel_z;
                 }
 
                 // take a step to the right

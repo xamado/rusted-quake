@@ -1,6 +1,8 @@
-use crate::renderer::{Renderer, Texture, Vertex};
+use crate::backbuffer::BackBuffer;
+use crate::engine::{DebugStats, Engine};
+use crate::renderer::{Texture, Vertex};
 use byteorder::{LittleEndian, ReadBytesExt};
-use glam::{ivec2, vec2, Mat4, Vec3};
+use glam::{ivec2, vec2, vec4, Mat4, Vec3, Vec4};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -170,6 +172,8 @@ pub struct Level {
 
     current_leaf_index: u16,
     visible_leafs: Vec<u16>,
+
+    light_animations: Vec<&'static [u8]>
 }
 
 
@@ -229,6 +233,19 @@ impl Level {
             entities,
             current_leaf_index: 0,
             visible_leafs: vec![],
+            light_animations: vec![
+                b"m", // normal
+                b"mmnmmommommnonmmonqnmmo", // Flicker 1
+                b"abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba", //Slow strong pulse
+                b"mmmmmaaaaammmmmaaaaaabcdefgabcdefg", //Candle 1
+                b"mamamamamama", //Fast Strobe
+                b"jklmnopqrstuvwxyzyxwvutsrqponmlkj", //Gentle Pulse
+                b"nmonqnmomnmomomno", //Flicker 2
+                b"mmmaaaabcdefgmmmmaaaammmaamm", //Candle 2
+                b"mmmaaammmaaammmabcdefaaaammmmabcdefmmmaaaa", //Candle 3
+                b"aaaaaaaazzzzzzzz", //Slow strobe 4
+                b"mmamammmmammamamaaamammma", //Fluorescent Flicker
+            ]
         })
     }
 
@@ -283,11 +300,42 @@ impl Level {
         }
     }
 
-    pub fn draw(&self, w: &Mat4, wvp: &Mat4, renderer: &mut Renderer) {
-        self.visible_leafs.iter().for_each(|l| {
-            let leaf = &self.bsp_leafs[*l as usize];
-            self.render_leaf(leaf, &w, &wvp, renderer);
-        });
+    pub fn draw(&self, engine: &Engine, stats: &mut DebugStats, back_buffer: &mut BackBuffer, position: Vec3, w: &Mat4, wvp: &Mat4) {
+        let mut drawn_faces: Vec<u16> = vec![];
+
+        let node = &self.bsp_nodes[0];
+        self.draw_node(engine, stats, back_buffer, node, position, w, wvp, &mut drawn_faces);
+
+        // self.visible_leafs.iter().for_each(|l| {
+        //     let leaf = &self.bsp_leafs[*l as usize];
+        //     self.render_leaf(leaf, &mut drawn_faces, &w, &wvp, renderer);
+        // });
+    }
+
+    fn draw_node(&self, engine: &Engine, stats: &mut DebugStats, back_buffer: &mut BackBuffer, node: &BSPNode, position: Vec3, w: &Mat4, wvp: &Mat4, drawn_faces: &mut Vec<u16>) {
+        let plane = &self.bsp_planes[node.plane_id as usize];
+        let distance: f32 = plane.normal.dot(position) - plane.distance;
+
+        let children = if distance >= 0.0 {
+            [node.front, node.back]
+        }
+        else {
+            [node.back, node.front]
+        };
+
+        for child in children {
+            if child & 0x8000 == 0 {
+                let first_node = &self.bsp_nodes[child as usize];
+                self.draw_node(engine, stats, back_buffer, first_node, position, w, wvp, drawn_faces);
+            } else {
+                let leaf_index = !child;
+
+                if self.visible_leafs.contains(&leaf_index) {
+                    let leaf = &self.bsp_leafs[leaf_index as usize];
+                    self.render_leaf(engine, stats, back_buffer, leaf, drawn_faces, w, wvp);
+                }
+            }
+        }
     }
 
     fn read_lump<T>(file: &mut File, lump: &BSPLump) -> io::Result<Vec<T>> {
@@ -482,12 +530,17 @@ impl Level {
         (min_u, min_v, max_u, max_v)
     }
 
-    fn render_leaf(&self, leaf: &BSPLeaf, w: &Mat4, wvp: &Mat4, renderer: &mut Renderer) {
+    fn render_leaf(&self, engine: &Engine, stats: &mut DebugStats, back_buffer: &mut BackBuffer, leaf: &BSPLeaf, rendered_faces: &mut Vec<u16>, w: &Mat4, wvp: &Mat4) {
         let face_list_offset = leaf.lface_id;
         let face_list_num = face_list_offset + leaf.lface_num;
 
         for face_list_index in face_list_offset..face_list_num {
             let face_index: u16 = self.bsp_lfaces[face_list_index as usize];
+            if rendered_faces.contains(&face_index) {
+                continue;
+            }
+            rendered_faces.push(face_index);
+
             let face: &BSPFace = &self.bsp_faces[face_index as usize];
             let tex_info: &Surface = &self.texture_infos[face.texinfo_id as usize];
             let texture: &Texture = &self.textures[tex_info.texture_id as usize];
@@ -525,7 +578,20 @@ impl Level {
                     v / texture.height as f32,
                 );
 
-                let color = Vec3::splat((face.baselight as f32) / 255.0).extend(1.0);
+                // pick color (light color) from the light type
+                let color: Vec4 = match face.typelight {
+                    0..=10 => {
+                        let c = 1.0 - self.get_light_intensity(engine.time().time_since_start(), face.typelight);
+                        vec4(c, c, c, 1.0)
+                    }
+                    255 => {
+                        Vec3::splat(1.0 - (face.baselight as f32) / 255.0).extend(1.0)
+                        // vec4(0.0, 1.0, 0.0, 1.0)
+                    }
+                    _ => {
+                        vec4(0.0, 1.0, 0.0, 1.0)
+                    }
+                };
 
                 let uv_lightmap = vec2(
                     (u - min_u) / (max_u - min_u),
@@ -548,29 +614,27 @@ impl Level {
                 face_indices.push((i - 1) as u32);
             }
 
-            match face.typelight {
-                0 => { // has lightmap
-                    assert!(face.typelight == 0 && face.lightmap != -1);
+            if face.lightmap != -1 {
+                let lightmap_data: &[u8] = &self.lightmaps[face.lightmap as usize..(face.lightmap + lightmap_size.x * lightmap_size.y) as usize];
+                engine.renderer().draw(stats, back_buffer, &face_vertices, &face_indices, w, wvp, texture, lightmap_data, &lightmap_size);
+            }
+            else {
+                let lightmap_data: &[u8] = &[]; // Declare slice reference
+                let lightmap_size = ivec2(0,0);
 
-                    let lightmap_data: &[u8] = &self.lightmaps[face.lightmap as usize..(face.lightmap + lightmap_size.x * lightmap_size.y) as usize];
-                    renderer.draw(&face_vertices, &face_indices, w, wvp, texture, lightmap_data, &lightmap_size);
-                },
-                1 => { // no lightmap
-                    assert!(face.typelight == 1 && face.lightmap == -1);
-
-                    let lightmap_data: &[u8] = &[]; // Declare slice reference
-                    let lightmap_size = ivec2(0,0);
-
-                    renderer.draw(&face_vertices, &face_indices, w, wvp, texture, lightmap_data, &lightmap_size);
-                },
-                _ => {
-                    let lightmap_data: &[u8] = &[]; // Declare slice reference
-                    let lightmap_size = ivec2(0,0);
-
-                    renderer.draw(&face_vertices, &face_indices, w, wvp, texture, lightmap_data, &lightmap_size);
-                }
+                engine.renderer().draw(stats, back_buffer, &face_vertices, &face_indices, w, wvp, texture, lightmap_data, &lightmap_size);
             }
         }
+    }
+
+    fn get_light_intensity(&self, elapsed_time: f32, light_type: u8) -> f32 {
+        let frames = self.light_animations[light_type as usize];
+
+        let index = (elapsed_time / 0.1) as usize % frames.len();
+        let c = frames[index];
+
+        let level = c.saturating_sub(b'a') as f32;  // 0 to 25
+        level / 25.0
     }
 }
 
