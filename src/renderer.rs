@@ -1,6 +1,6 @@
 use crate::backbuffer::BackBuffer;
 use crate::color::Color;
-use crate::engine::{DebugStats, Engine};
+use crate::engine::DebugStats;
 use crate::rect::IRect;
 use glam::{ivec2, vec3, vec4, IVec2, Mat4, Vec2, Vec3, Vec4, Vec4Swizzles};
 use std::sync::Arc;
@@ -13,6 +13,19 @@ pub struct Vertex {
     pub tex_coord: Vec2,
     pub uv_lightmap: Vec2,
 }
+
+impl Default for Vertex {
+    fn default() -> Self {
+        Self {
+            position: Vec3::ZERO,
+            normal: Vec3::ZERO,
+            color: Vec4::ZERO,
+            tex_coord: Vec2::ZERO,
+            uv_lightmap: Vec2::ZERO,
+        }
+    }
+}
+
 
 pub struct Texture {
     pub name: String,
@@ -32,19 +45,6 @@ pub struct VertexOutput {
     screen_position: Vec4,
     world_position: Vec3,
 }
-
-impl Default for Vertex {
-    fn default() -> Self {
-        Self {
-            position: Vec3::ZERO,
-            normal: Vec3::ZERO,
-            color: Vec4::ZERO,
-            tex_coord: Vec2::ZERO,
-            uv_lightmap: Vec2::ZERO,
-        }
-    }
-}
-
 
 pub struct RendererSettings {
     pub naive_rasterization: bool,

@@ -6,6 +6,7 @@ mod renderer;
 mod engine;
 mod backbuffer;
 mod rect;
+mod plane;
 
 use crate::color::Color;
 use crate::level::Level;
@@ -80,14 +81,14 @@ fn process_input(window: &Window, elapsed_seconds: f32, game_settings: &mut Game
 
 fn main() {
     // create our renderer
-    let mut renderer = Renderer::new(RendererSettings {
+    let renderer = Renderer::new(RendererSettings {
         naive_rasterization: true,
         tile_size: 16,
         wireframe: false,
         ..RendererSettings::default()
     });
 
-    let mut engine: Engine = Engine::new(renderer);
+    let engine: Engine = Engine::new(renderer);
 
     let mut stats: DebugStats = DebugStats::default();
 
@@ -107,7 +108,6 @@ fn main() {
     ).unwrap_or_else(|e| {
         panic!("{}", e);
     });
-
 
     // load our test obj file
     // let model = Model::load("data/plane.obj").expect("Failed to load model");
@@ -143,7 +143,7 @@ fn main() {
         aspect: SCREEN_WIDTH as f32 / SCREEN_HEIGHT as f32,
         fov: 70.0,
         znear: 1.0,
-        zfar: 10000.0,
+        zfar: 2500.0,
     };
 
     let mut buffer = BackBuffer::new(SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -189,7 +189,7 @@ fn main() {
 
             let player_position = camera.position;
             level.update_visiblity(player_position);
-            level.draw(&engine, &mut stats, &mut buffer, player_position, &world, &wvp);
+            level.draw(&engine, &mut stats, &mut buffer, player_position, &world, &view, &proj, &wvp);
         }
 
         let mut buf: Vec<u32>;

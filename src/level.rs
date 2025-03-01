@@ -9,6 +9,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use std::{io, ptr};
+use crate::plane::Plane;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -19,9 +20,9 @@ struct BoundBox {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-struct BBoxShort {
-    min: [i16;3], // Minimum X, Y, Z
-    max: [i16;3], // Maximum X, Y, Z
+pub(crate) struct BBoxShort {
+    pub(crate) min: [i16;3], // Minimum X, Y, Z
+    pub(crate) max: [i16;3], // Maximum X, Y, Z
 }
 
 #[repr(C)]
@@ -300,19 +301,41 @@ impl Level {
         }
     }
 
-    pub fn draw(&self, engine: &Engine, stats: &mut DebugStats, back_buffer: &mut BackBuffer, position: Vec3, w: &Mat4, wvp: &Mat4) {
+    pub fn draw(&self, engine: &Engine, stats: &mut DebugStats, back_buffer: &mut BackBuffer, position: Vec3, w: &Mat4, v: &Mat4, p: &Mat4, wvp: &Mat4) {
         let mut drawn_faces: Vec<u16> = vec![];
 
-        let node = &self.bsp_nodes[0];
-        self.draw_node(engine, stats, back_buffer, node, position, w, wvp, &mut drawn_faces);
+        let frustum_planes = Plane::extract_frustum_planes_world_space(&p, &v);
 
-        // self.visible_leafs.iter().for_each(|l| {
-        //     let leaf = &self.bsp_leafs[*l as usize];
-        //     self.render_leaf(leaf, &mut drawn_faces, &w, &wvp, renderer);
+        let node = &self.bsp_nodes[0];
+        self.draw_node(engine, stats, back_buffer, node, position, &frustum_planes, w, wvp, &mut drawn_faces);
+
+        // DEBUG: Draw all leafs
+        // self.bsp_leafs.iter().for_each(|l| {
+        //     self.draw_leaf(engine, stats, back_buffer, &l, &frustum_planes, &mut drawn_faces, w, wvp);
         // });
     }
 
-    fn draw_node(&self, engine: &Engine, stats: &mut DebugStats, back_buffer: &mut BackBuffer, node: &BSPNode, position: Vec3, w: &Mat4, wvp: &Mat4, drawn_faces: &mut Vec<u16>) {
+    fn draw_node(
+        &self,
+        engine: &Engine,
+        stats: &mut DebugStats,
+        back_buffer: &mut BackBuffer,
+        node: &BSPNode,
+        position: Vec3,
+        frustum_planes: &[Plane; 6],
+        w: &Mat4,
+        wvp: &Mat4,
+        drawn_faces: &mut Vec<u16>
+    ) {
+        stats.bsp_nodes_traversed += 1;
+
+        // Stop processing node branch if outside our frustum
+        for plane in frustum_planes {
+            if Plane::is_bbox_outside_plane(&plane, &node.bound) {
+                return;
+            }
+        }
+
         let plane = &self.bsp_planes[node.plane_id as usize];
         let distance: f32 = plane.normal.dot(position) - plane.distance;
 
@@ -326,13 +349,20 @@ impl Level {
         for child in children {
             if child & 0x8000 == 0 {
                 let first_node = &self.bsp_nodes[child as usize];
-                self.draw_node(engine, stats, back_buffer, first_node, position, w, wvp, drawn_faces);
+                self.draw_node(engine, stats, back_buffer, first_node, position, frustum_planes, w, wvp, drawn_faces);
             } else {
                 let leaf_index = !child;
 
                 if self.visible_leafs.contains(&leaf_index) {
                     let leaf = &self.bsp_leafs[leaf_index as usize];
-                    self.render_leaf(engine, stats, back_buffer, leaf, drawn_faces, w, wvp);
+
+                    for plane in frustum_planes {
+                        if Plane::is_bbox_outside_plane(&plane, &leaf.bound) {
+                            continue;
+                        }
+                    }
+
+                    self.draw_leaf(engine, stats,back_buffer, leaf, drawn_faces, w, wvp);
                 }
             }
         }
@@ -530,7 +560,18 @@ impl Level {
         (min_u, min_v, max_u, max_v)
     }
 
-    fn render_leaf(&self, engine: &Engine, stats: &mut DebugStats, back_buffer: &mut BackBuffer, leaf: &BSPLeaf, rendered_faces: &mut Vec<u16>, w: &Mat4, wvp: &Mat4) {
+    fn draw_leaf(
+        &self,
+        engine: &Engine,
+        stats: &mut DebugStats,
+        back_buffer: &mut BackBuffer,
+        leaf: &BSPLeaf,
+        rendered_faces: &mut Vec<u16>,
+        w: &Mat4,
+        wvp: &Mat4
+    ) {
+        stats.leafs_rendered += 1;
+
         let face_list_offset = leaf.lface_id;
         let face_list_num = face_list_offset + leaf.lface_num;
 

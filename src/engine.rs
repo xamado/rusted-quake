@@ -28,6 +28,8 @@ pub struct DebugStats {
     pub debug_values: Vec<(String, String)>,
     pub pixel_overdraw: u32,
     pub pixels_failed_z_test: u32,
+    pub bsp_nodes_traversed: u32,
+    pub leafs_rendered: u32,
 }
 
 impl DebugStats {
@@ -58,7 +60,7 @@ impl Engine {
             renderer,
         }
     }
-    
+
     pub fn time(&self) -> &Time {
         &self.time
     }
