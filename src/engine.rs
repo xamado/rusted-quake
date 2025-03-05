@@ -3,18 +3,29 @@ use crate::renderer::Renderer;
 
 pub struct Time {
     start_time: Instant,
+    frame_time: Instant,
+    elapsed_time: f32,
 }
 
 impl Time {
     pub fn new() -> Time {
         Time {
             start_time: Instant::now(),
+            frame_time: Instant::now(),
+            elapsed_time: 0.0,
         }
+    }
+
+    pub fn update(&mut self) {
+        self.elapsed_time = self.frame_time.elapsed().as_secs_f32();
+        self.frame_time = Instant::now();
     }
 
     pub fn time_since_start(&self) -> f32 {
         self.start_time.elapsed().as_secs_f32()
     }
+
+    pub fn elapsed_time(&self) -> f32 { self.elapsed_time }
 }
 
 #[derive(Debug, Default)]
@@ -30,6 +41,8 @@ pub struct DebugStats {
     pub pixels_failed_z_test: u32,
     pub bsp_nodes_traversed: u32,
     pub leafs_rendered: u32,
+    pub faces_rendered: u32,
+    pub models_rendered: u32,
 }
 
 impl DebugStats {
@@ -45,6 +58,12 @@ impl DebugStats {
 pub struct Engine {
     time: Time,
     renderer: Renderer,
+}
+
+impl Engine {
+    pub fn update(&mut self) {
+        self.time.update();
+    }
 }
 
 impl Engine {

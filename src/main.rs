@@ -7,25 +7,24 @@ mod engine;
 mod backbuffer;
 mod rect;
 mod plane;
+mod entity;
 
 use crate::color::Color;
+use crate::engine::{DebugStats, Engine};
 use crate::level::Level;
 use crate::renderer::{Renderer, RendererSettings};
-use crate::engine::{DebugStats, Engine};
 
+use crate::backbuffer::BackBuffer;
+use crate::camera::CameraSettings;
 use camera::Camera;
-use glam::{vec3, Mat4, Quat, Vec3};
+use glam::{vec2, vec3, Mat4, Quat, Vec3};
 use minifb::{Key, Scale, Window, WindowOptions};
 use minifb_fonts::font6x8;
-use std::time::Instant;
-use crate::backbuffer::BackBuffer;
 
 const SCREEN_WIDTH: u32 = 1920/2;
 const SCREEN_HEIGHT: u32 = 1080/2;
 
 struct GameSettings {
-    pub camera_speed: f32,
-    pub camera_rotation_speed: f32,
     pub draw_depth: bool,
     pub show_stats: bool,
 }
@@ -35,47 +34,48 @@ fn float_to_u32_color(value: f32) -> u32 {
     0xFF000000 | (intensity << 16) | (intensity << 8) | intensity
 }
 
-fn process_input(window: &Window, elapsed_seconds: f32, game_settings: &mut GameSettings, camera: &mut Camera) {
-    if window.is_key_down(Key::W) {
-        camera.position += camera.forward() * game_settings.camera_speed * elapsed_seconds;
-    }
-    if window.is_key_down(Key::S) {
-        camera.position -= camera.forward() * game_settings.camera_speed * elapsed_seconds;
-    }
-    if window.is_key_down(Key::A) {
-        camera.position += camera.left() * game_settings.camera_speed * elapsed_seconds;
-    }
-    if window.is_key_down(Key::D) {
-        camera.position -= camera.left() * game_settings.camera_speed * elapsed_seconds;
-    }
-    if window.is_key_down(Key::E) {
-        camera.position += vec3(0.0, 0.0, 1.0) * game_settings.camera_speed * elapsed_seconds;
-    }
-    if window.is_key_down(Key::Q) {
-        camera.position -= vec3(0.0, 0.0, 1.0) * game_settings.camera_speed * elapsed_seconds;
-    }
-    if window.is_key_down(Key::Left) {
-        camera.yaw += game_settings.camera_rotation_speed * elapsed_seconds;
-    }
-    if window.is_key_down(Key::Right) {
-        camera.yaw -= game_settings.camera_rotation_speed * elapsed_seconds;
-    }
-    if window.is_key_down(Key::Up) {
-        camera.pitch -= game_settings.camera_rotation_speed * elapsed_seconds;
-    }
-    if window.is_key_down(Key::Down) {
-        camera.pitch += game_settings.camera_rotation_speed * elapsed_seconds;
-    }
-    if window.is_key_released(Key::Tab) {
-        game_settings.draw_depth = !game_settings.draw_depth;
+fn process_input(window: &Window, game_settings: &mut GameSettings, camera: &mut Camera) {
+    {
+        let mut movement = vec3(0.0, 0.0, 0.0);
+        if window.is_key_down(Key::W) {
+            movement.x += 1.0;
+        }
+        if window.is_key_down(Key::S) {
+            movement.x -= 1.0;
+        }
+        if window.is_key_down(Key::A) {
+            movement.y += 1.0;
+        }
+        if window.is_key_down(Key::D) {
+            movement.y -= 1.0;
+        }
+        if window.is_key_down(Key::E) {
+            movement.z += 1.0;
+        }
+        if window.is_key_down(Key::Q) {
+            movement.z -= 1.0;
+        }
+
+        let mut rotation = vec2(0.0, 0.0);
+
+        if window.is_key_down(Key::Left) {
+            rotation.x += 1.0;
+        }
+        if window.is_key_down(Key::Right) {
+            rotation.x -= 1.0;
+        }
+        if window.is_key_down(Key::Up) {
+            rotation.y -= 1.0;
+        }
+        if window.is_key_down(Key::Down) {
+            rotation.y += 1.0;
+        }
+
+        camera.set_input(movement, rotation);
     }
 
-    // control camera speed
-    if window.is_key_released(Key::NumPadMinus) {
-        game_settings.camera_speed -= 10.0;
-    }
-    else if window.is_key_released(Key::NumPadPlus) {
-        game_settings.camera_speed += 10.0;
+    if window.is_key_released(Key::Tab) {
+        game_settings.draw_depth = !game_settings.draw_depth;
     }
 }
 
@@ -88,7 +88,7 @@ fn main() {
         ..RendererSettings::default()
     });
 
-    let engine: Engine = Engine::new(renderer);
+    let mut engine: Engine = Engine::new(renderer);
 
     let mut stats: DebugStats = DebugStats::default();
 
@@ -111,7 +111,7 @@ fn main() {
 
     // load our test obj file
     // let model = Model::load("data/plane.obj").expect("Failed to load model");
-    let mut level = Level::load("maps/e1m1_remaster.bsp").expect("Failed to load level");
+    let mut level = Level::load("maps/e1m1.bsp").expect("Failed to load level");
 
     let entity_player_start = level.get_entity("info_player_start");
 
@@ -129,54 +129,40 @@ fn main() {
         .unwrap_or(0.0);
 
     let mut settings = GameSettings {
-        camera_speed: 200.0,
-        camera_rotation_speed: 3.0,
         draw_depth: false,
         show_stats: true,
     };
 
     // create our camera
-    let mut camera = Camera {
-        position: player_spawn,
-        pitch: 0.0,
-        yaw: player_rotation.to_radians(),
-        aspect: SCREEN_WIDTH as f32 / SCREEN_HEIGHT as f32,
-        fov: 70.0,
-        znear: 1.0,
-        zfar: 2500.0,
-    };
+    let mut camera = Camera::new(
+        CameraSettings {
+            aspect: SCREEN_WIDTH as f32 / SCREEN_HEIGHT as f32,
+            fov: 70.0,
+            znear: 0.1,
+            zfar: 2500.0,
+        },
+    );
+
+    camera.set_position(player_spawn);
+    camera.set_rotation(player_rotation, 0.0);
 
     let mut buffer = BackBuffer::new(SCREEN_WIDTH, SCREEN_HEIGHT);
 
-    let mut instant = Instant::now();
-
     // run the main-loop
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        engine.update();
         stats.clear();
-
-        // fps counter
-        let elapsed_seconds = instant.elapsed().as_secs_f32();
-        instant = Instant::now();
 
         // clear our buffer to start rendering
         engine.renderer().clear(&mut buffer);
 
         // process input
-        process_input(&window, elapsed_seconds, &mut settings, &mut camera);
+        process_input(&window, &mut settings, &mut camera);
 
         let view = camera.get_view_mat();
         let proj = camera.get_projection_mat();
 
-        {
-            // let world = Mat4::from_scale_rotation_translation(
-            //     Vec3::new(10.0, 10.0, 10.0),
-            //     Quat::IDENTITY,
-            //     Vec3::new(0.0, 0.0, 0.0)
-            // );
-
-            // let wvp = proj * view * world;
-            // renderer.draw(&model.vertices, &model.indices, &world, &wvp);
-        }
+        camera.update(&engine, &level);
 
         {
             let world = Mat4::from_scale_rotation_translation(
@@ -205,7 +191,7 @@ fn main() {
         }
 
         // draw some informative text
-        let text_frame_time = format!("frame: {}ms", (elapsed_seconds * 1000.0) as u32);
+        let text_frame_time = format!("frame: {}ms", (engine.time().elapsed_time() * 1000.0) as u32);
         text.draw_text(&mut buf, 10, 20, text_frame_time.as_str());
         let text_camera_position = format!("camera: {}", camera.position);
         text.draw_text(&mut buf, 10, 40, text_camera_position.as_str());

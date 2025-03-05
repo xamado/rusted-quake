@@ -33,6 +33,7 @@ pub struct Texture {
     pub height: u32,
     pub data: Vec<Vec<u8>>,
     pub palette: Arc<[u32; 256]>,
+    pub frames: u8,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -719,6 +720,12 @@ impl Renderer {
         let iv1 = IVec2::new(v1.screen_position.x.ceil() as i32, v1.screen_position.y.ceil() as i32);
         let iv2 = IVec2::new(v2.screen_position.x.ceil() as i32, v2.screen_position.y.ceil() as i32);
 
+        // calculate the area of the triangle (2x)
+        let area: i32 = Self::edge_function(iv0, iv1, iv2);
+        if area <= 0 { // negative area means it's a back-facing triangle
+            return;
+        }
+
         // compute bounding box
         let mut min_x: i32 = iv0.x.min(iv1.x).min(iv2.x);
         let mut min_y: i32 = iv0.y.min(iv1.y).min(iv2.y);
@@ -730,14 +737,9 @@ impl Renderer {
         min_y = min_y.max(0);
         max_x = max_x.min((back_buffer.get_width() - 1) as i32);
         max_y = max_y.min((back_buffer.get_height() - 1) as i32);
-        
-        // calculate the area of the triangle (2x)
-        let area: i32 = Self::edge_function(iv0, iv1, iv2);
-        if area <= 0 { // negative area means it's a back-facing triangle
-            return;
-        }
 
         // pre-calculate the area for the first pixel in the grid
+        // let bb_min = ivec2(min_x, min_y);
         // let mut w0_min = Self::edge_function(iv1, iv2, bb_min);
         // let mut w1_min = Self::edge_function(iv2, iv0, bb_min);
         // let mut w2_min = Self::edge_function(iv0, iv1, bb_min);

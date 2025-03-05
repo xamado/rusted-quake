@@ -5,6 +5,7 @@ pub struct Color {
     rgba: Vec4,
 }
 
+#[allow(dead_code)]
 impl Color {
     pub fn get_vec(&self) -> Vec4 { self.rgba }
     

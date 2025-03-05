@@ -1,6 +1,8 @@
-use glam::{Mat4, Vec3, Vec4};
+use glam::{vec3, Mat4, Vec3, Vec4};
 use crate::level::BBoxShort;
+use crate::level::BoundBox;
 
+#[derive(Debug, Default)]
 pub struct Plane {
     pub normal: Vec3,
     pub d: f32,
@@ -15,7 +17,7 @@ impl Plane {
             d: v.w / length                       // Scale d to match
         }
     }
-
+    
     pub fn extract_frustum_planes_world_space(proj: &Mat4, view: &Mat4) -> [Plane; 6] {
         let mut planes = [Vec4::default(); 6];
 
@@ -31,7 +33,7 @@ impl Plane {
         planes.map(Plane::new)
     }
 
-    pub fn is_bbox_outside_plane(plane: &Plane, bbox: &BBoxShort) -> bool {
+    pub fn is_bboxshort_outside_plane(plane: &Plane, bbox: &BBoxShort) -> bool {
         let corners = [
             [ bbox.min[0], bbox.min[1], bbox.min[2] ],
             [ bbox.min[0], bbox.min[1], bbox.max[2] ],
@@ -48,6 +50,33 @@ impl Plane {
                 (plane.normal.y * p[1] as f32) +
                 (plane.normal.z * p[2] as f32) +
                 plane.d
+        }
+
+        let mut outside_count = 0;
+        for corner in corners {
+            let d = distance_to_plane(&corner, &plane);
+            if d < 0.0 {
+                outside_count += 1;
+            }
+        }
+
+        outside_count == 8
+    }
+
+    pub fn is_bbox_outside_plane(plane: &Plane, bbox: &BoundBox) -> bool {
+        let corners = [
+            vec3(bbox.min.x, bbox.min.y, bbox.min.z),
+            vec3(bbox.min.x, bbox.min.y, bbox.max.z),
+            vec3(bbox.min.x, bbox.max.y, bbox.min.z),
+            vec3(bbox.min.x, bbox.max.y, bbox.max.z),
+            vec3(bbox.max.x, bbox.min.y, bbox.min.z),
+            vec3(bbox.max.x, bbox.min.y, bbox.max.z),
+            vec3(bbox.max.x, bbox.max.y, bbox.min.z),
+            vec3(bbox.max.x, bbox.max.y, bbox.max.z),
+        ];
+
+        fn distance_to_plane(p: &Vec3, plane: &Plane) -> f32 {
+            (plane.normal.x * p.x) + (plane.normal.y * p.y) + (plane.normal.z * p.z) + plane.d
         }
 
         let mut outside_count = 0;

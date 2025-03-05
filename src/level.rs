@@ -2,7 +2,7 @@ use crate::backbuffer::BackBuffer;
 use crate::engine::{DebugStats, Engine};
 use crate::renderer::{Texture, Vertex};
 use byteorder::{LittleEndian, ReadBytesExt};
-use glam::{ivec2, vec2, vec4, Mat4, Vec3, Vec4};
+use glam::{ivec2, vec2, vec4, Mat4, Vec2, Vec3, Vec4};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -13,16 +13,16 @@ use crate::plane::Plane;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-struct BoundBox {
-    min: Vec3, // Minimum X, Y, Z
-    max: Vec3, // Maximum X, Y, Z
+pub struct BoundBox {
+    pub min: Vec3, // Minimum X, Y, Z
+    pub max: Vec3, // Maximum X, Y, Z
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct BBoxShort {
-    pub(crate) min: [i16;3], // Minimum X, Y, Z
-    pub(crate) max: [i16;3], // Maximum X, Y, Z
+pub struct BBoxShort {
+    pub min: [i16;3], // Minimum X, Y, Z
+    pub max: [i16;3], // Maximum X, Y, Z
 }
 
 #[repr(C)]
@@ -101,7 +101,12 @@ struct BSPLeaf {
 struct BSPPlane {
     normal: Vec3,
     distance: f32,
-    plane_type: u32,
+    plane_type: u32,    // 0: Axial plane, in X
+                        // 1: Axial plane, in Y
+                        // 2: Axial plane, in Z
+                        // 3: Non axial plane, roughly toward X
+                        // 4: Non axial plane, roughly toward Y
+                        // 5: Non axial plane, roughly toward Z
 }
 
 #[repr(C)]
@@ -125,6 +130,17 @@ struct BSPEdge {
 }
 
 #[repr(C)]
+struct BSPClipNode {
+    plane_id: u32,
+    front: i16,     // If positive, id of Front child node
+                    // If -2, the Front part is inside the model
+                    // If -1, the Front part is outside the model
+    back: i16,      // If positive, id of Back child node
+                    // If -2, the Back part is inside the model
+                    // If -1, the Back part is outside the model
+}
+
+#[repr(C)]
 struct Surface {
     u_axis: Vec3,
     u_offset: f32,
@@ -145,41 +161,56 @@ struct TextureHeader             // Mip Texture
 }
 
 #[derive(Debug, Default)]
-pub struct Entity {
+pub struct BSPEntity {
     properties: HashMap<String, String>,
 }
 
-impl Entity {
+impl BSPEntity {
     pub fn get_property(&self, name: &str) -> Option<&String> {
         self.properties.get(name) // This already returns `Option<&String>`
     }
 }
 
+#[derive(Debug, Default)]
+pub struct HitResult {
+    pub all_solid: bool,
+    pub start_solid: bool,
+    pub plane: Plane,
+    pub fraction: f32,
+    pub end_position: Vec3,
+}
+
 pub struct Level {
-    _bsp_models: Vec<BSPModel>,
-    bsp_nodes: Vec<BSPNode>,
-    bsp_planes: Vec<BSPPlane>,
-    bsp_leafs: Vec<BSPLeaf>,
-    bsp_faces: Vec<BSPFace>,
-    bsp_lfaces: Vec<u16>,
-    bsp_edges: Vec<BSPEdge>,
-    bsp_ledges: Vec<i32>,
-    vislist: Vec<u8>,
-    vertices: Vec<Vec3>,
-    texture_infos: Vec<Surface>,
+    models: Vec<BSPModel>,
+    entities: Vec<BSPEntity>,
     textures: Vec<Texture>,
     lightmaps: Vec<u8>,
-    entities: Vec<Entity>,
+
+    vertices: Vec<Vec3>,
+    edges: Vec<BSPEdge>,
+    faces: Vec<BSPFace>,
+    surfaces: Vec<Surface>,
+
+    planes: Vec<BSPPlane>,
+    nodes: Vec<BSPNode>,
+    leafs: Vec<BSPLeaf>,
+    clip_nodes: Vec<BSPClipNode>,
+
+    vislist: Vec<u8>,
+    list_faces: Vec<u16>,
+    list_edges: Vec<i32>,
 
     current_leaf_index: u16,
     visible_leafs: Vec<u16>,
 
-    light_animations: Vec<&'static [u8]>
+    light_animations: Vec<&'static [u8]>,
+
+    textures_map: HashMap<String, u16>,
 }
 
 
 impl Level {
-    pub(crate) fn load<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let mut file = File::open(path)?;
 
         // read header
@@ -192,43 +223,42 @@ impl Level {
         }
 
         // read bsp nodes
-        let bsp_models: Vec<BSPModel> = Self::read_lump(&mut file, &bsp_header.models).expect("bsp model load failed");
-        let bsp_nodes: Vec<BSPNode> = Self::read_lump(&mut file, &bsp_header.nodes).expect("Failed to read BSP nodes");
-        let bsp_planes: Vec<BSPPlane> = Self::read_lump(&mut file, &bsp_header.planes).expect("Failed to read BSP planes");
-        let bsp_leafs: Vec<BSPLeaf> = Self::read_lump(&mut file, &bsp_header.leaves).expect("Failed to read BSP leafs");
-        let bsp_faces: Vec<BSPFace> = Self::read_lump(&mut file, &bsp_header.faces).expect("Failed to read BSP faces");
-
+        let entities = Self::read_entities(&mut file, &bsp_header.entities).expect("Failed to read entities");
+        let planes: Vec<BSPPlane> = Self::read_lump(&mut file, &bsp_header.planes).expect("Failed to read BSP planes");
+        let textures: Vec<Texture> = Self::read_textures(&mut file, &bsp_header.textures).expect("Failed to read textures");
+        let vertices: Vec<Vec3> = Self::read_lump(&mut file, &bsp_header.vertices).expect("Failed to read vertices");
+        let vislist: Vec<u8> = Self::read_lump(&mut file, &bsp_header.vislist).expect("Failed to read vislist");
+        let nodes: Vec<BSPNode> = Self::read_lump(&mut file, &bsp_header.nodes).expect("Failed to read BSP nodes");
+        let texture_infos: Vec<Surface> = Self::read_lump(&mut file, &bsp_header.texinfo).expect("Failed to read texture infos");
+        let faces: Vec<BSPFace> = Self::read_lump(&mut file, &bsp_header.faces).expect("Failed to read BSP faces");
+        let lightmaps: Vec<u8> = Self::read_lump(&mut file, &bsp_header.lightmaps).expect("Failed to read lightmaps");
+        let clip_nodes: Vec<BSPClipNode> = Self::read_lump(&mut file, &bsp_header.clipnodes).expect("Failed to read clip nodes");
+        let leafs: Vec<BSPLeaf> = Self::read_lump(&mut file, &bsp_header.leaves).expect("Failed to read BSP leafs");
         let bsp_lfaces: Vec<u16> = Self::read_lump(&mut file, &bsp_header.lface).expect("Failed to read BSP list of faces");
         let bsp_edges: Vec<BSPEdge> = Self::read_lump(&mut file, &bsp_header.edges).expect("Failed to read BSP edges");
         let list_edges: Vec<i32> = Self::read_lump(&mut file, &bsp_header.ledges).expect("Failed to read BSP list of edges");
+        let models: Vec<BSPModel> = Self::read_lump(&mut file, &bsp_header.models).expect("bsp model load failed");
 
-        let vertices: Vec<Vec3> = Self::read_lump(&mut file, &bsp_header.vertices).expect("Failed to read vertices");
-
-        let vislist: Vec<u8> = Self::read_lump(&mut file, &bsp_header.vislist).expect("Failed to read vislist");
-
-        let texture_infos: Vec<Surface> = Self::read_lump(&mut file, &bsp_header.texinfo).expect("Failed to read texture infos");
-
-        let textures: Vec<Texture> = Self::read_textures(&mut file, &bsp_header.textures).expect("Failed to read textures");
-        let lightmaps: Vec<u8> = Self::read_lump(&mut file, &bsp_header.lightmaps).expect("Failed to read lightmaps");
-
-        // let textures: Vec<BSelf::read_lump(&mut file, &bsp_header.textures).expect("Failed to read textures lump");
-
-        let entities = Self::read_entities(&mut file, &bsp_header.entities).expect("Failed to read entities");
+        let mut textures_map: HashMap<String, u16> = HashMap::new();
+        for i in 0..textures.len() {
+            let texture = &textures[i];
+            textures_map.insert(texture.name.clone(), i as u16);
+        }
 
         // Self::dump_textures_as_bmp(&textures);
 
         Ok(Self {
-            _bsp_models: bsp_models,
-            bsp_nodes,
-            bsp_planes,
-            bsp_leafs,
-            bsp_faces,
-            bsp_lfaces,
-            bsp_edges,
-            bsp_ledges: list_edges,
+            models,
+            nodes,
+            planes,
+            leafs,
+            faces,
+            list_faces: bsp_lfaces,
+            edges: bsp_edges,
+            list_edges,
             vertices,
             vislist,
-            texture_infos,
+            surfaces: texture_infos,
             textures,
             lightmaps,
             entities,
@@ -246,11 +276,13 @@ impl Level {
                 b"mmmaaammmaaammmabcdefaaaammmmabcdefmmmaaaa", //Candle 3
                 b"aaaaaaaazzzzzzzz", //Slow strobe 4
                 b"mmamammmmammamamaaamammma", //Fluorescent Flicker
-            ]
+            ],
+            textures_map,
+            clip_nodes,
         })
     }
 
-    pub fn get_entity(&self, name: &str) -> Option<&Entity> {
+    pub fn get_entity(&self, name: &str) -> Option<&BSPEntity> {
         for entity in &self.entities {
             if entity.properties.contains_key("classname") && entity.properties["classname"] == name {
                 return Some(entity);
@@ -266,10 +298,10 @@ impl Level {
             return;
         }
 
-        let start_leaf = &self.bsp_leafs[current_leaf_index as usize];
+        let start_leaf = &self.leafs[current_leaf_index as usize];
 
         self.visible_leafs = vec![];
-        let num_leaves = self.bsp_leafs.len() as u16;
+        let num_leaves = self.leafs.len() as u16;
 
         // leaf.vislist marks the offset where the visibility list for this leaf starts
         let mut v = start_leaf.vislist as usize;
@@ -306,16 +338,63 @@ impl Level {
 
         let frustum_planes = Plane::extract_frustum_planes_world_space(&p, &v);
 
-        let node = &self.bsp_nodes[0];
-        self.draw_node(engine, stats, back_buffer, node, position, &frustum_planes, w, wvp, &mut drawn_faces);
+        // Collect visible leafs
+        let node = &self.nodes[0];
+        let mut visited_leafs: Vec<u16> = vec![];
+        self.traverse_bsp_tree(engine, stats, back_buffer, node, position, &frustum_planes, w, wvp, &mut drawn_faces, &mut visited_leafs);
+
+        stats.leafs_rendered += visited_leafs.len() as u32;
+
+        // Now collect faces, faces can be repeated in different leafs (AFAIK)
+        let mut visible_faces: Vec<u16> = vec![];
+        for leaf_index in visited_leafs {
+            // self.draw_leaf(engine, stats, back_buffer, leaf, drawn_faces, w, wvp);
+            let leaf: &BSPLeaf = &self.leafs[leaf_index as usize];
+
+            let face_list_offset = leaf.lface_id;
+            let face_list_num = face_list_offset + leaf.lface_num;
+
+            for face_list_index in face_list_offset..face_list_num {
+                let face_index: u16 = self.list_faces[face_list_index as usize];
+                if !visible_faces.contains(&face_index) {
+                    visible_faces.push(face_index);
+                }
+            }
+        };
+
+        stats.faces_rendered += visible_faces.len() as u32;
+
+        // Draw faces
+        self.draw_faces(engine, stats, back_buffer, &visible_faces, w, wvp);
 
         // DEBUG: Draw all leafs
         // self.bsp_leafs.iter().for_each(|l| {
-        //     self.draw_leaf(engine, stats, back_buffer, &l, &frustum_planes, &mut drawn_faces, w, wvp);
+             // self.draw_leaf(engine, stats, back_buffer, &l, &frustum_planes, &mut drawn_faces, w, wvp);
         // });
+
+        // Draw all submodels
+        for model in &self.models[1..] {
+            let mut model_faces: Vec<u16> = vec![];
+
+            if Self::is_aabb_outside_frustum(&frustum_planes, &model.bound) {
+                continue;
+            }
+
+            stats.models_rendered += 1;
+
+            let range_start: u16 = model.face_id as u16;
+            let range_end: u16 = (model.face_id + model.face_num) as u16;
+            for face_index in range_start..range_end {
+                if !model_faces.contains(&face_index) {
+                    model_faces.push(face_index);
+                }
+            }
+
+            self.draw_faces(engine, stats, back_buffer, &model_faces, w, wvp);
+        }
     }
 
-    fn draw_node(
+    fn traverse_bsp_tree(
         &self,
         engine: &Engine,
         stats: &mut DebugStats,
@@ -325,18 +404,18 @@ impl Level {
         frustum_planes: &[Plane; 6],
         w: &Mat4,
         wvp: &Mat4,
-        drawn_faces: &mut Vec<u16>
-    ) {
+        drawn_faces: &mut Vec<u16>,
+        visited_leafs: &mut Vec<u16>,
+    )
+    {
         stats.bsp_nodes_traversed += 1;
 
         // Stop processing node branch if outside our frustum
-        for plane in frustum_planes {
-            if Plane::is_bbox_outside_plane(&plane, &node.bound) {
-                return;
-            }
+        if Self::is_aabb_outside_frustum_short(frustum_planes, &node.bound) {
+            return;
         }
 
-        let plane = &self.bsp_planes[node.plane_id as usize];
+        let plane = &self.planes[node.plane_id as usize];
         let distance: f32 = plane.normal.dot(position) - plane.distance;
 
         let children = if distance >= 0.0 {
@@ -348,21 +427,19 @@ impl Level {
 
         for child in children {
             if child & 0x8000 == 0 {
-                let first_node = &self.bsp_nodes[child as usize];
-                self.draw_node(engine, stats, back_buffer, first_node, position, frustum_planes, w, wvp, drawn_faces);
+                let first_node = &self.nodes[child as usize];
+                self.traverse_bsp_tree(engine, stats, back_buffer, first_node, position, frustum_planes, w, wvp, drawn_faces, visited_leafs);
             } else {
                 let leaf_index = !child;
 
                 if self.visible_leafs.contains(&leaf_index) {
-                    let leaf = &self.bsp_leafs[leaf_index as usize];
+                    let leaf = &self.leafs[leaf_index as usize];
 
-                    for plane in frustum_planes {
-                        if Plane::is_bbox_outside_plane(&plane, &leaf.bound) {
-                            continue;
-                        }
+                    if Self::is_aabb_outside_frustum_short(frustum_planes, &leaf.bound) {
+                        continue;
                     }
 
-                    self.draw_leaf(engine, stats,back_buffer, leaf, drawn_faces, w, wvp);
+                    visited_leafs.push(leaf_index);
                 }
             }
         }
@@ -407,6 +484,10 @@ impl Level {
         Ok(palette)
     }
 
+    fn get_texture(&self, name: &String) -> Option<&Texture> {
+        self.textures_map.get(name).and_then(|&index| self.textures.get(index as usize))
+    }
+
     fn read_textures(file: &mut File, lump: &BSPLump) -> io::Result<Vec<Texture>> {
         // read palette
         let palette = Arc::new(Self::read_palette()?);
@@ -420,6 +501,8 @@ impl Level {
         let mut offsets = vec![0i32; num_textures as usize];
         file.read_i32_into::<LittleEndian>(&mut offsets)?;
 
+        let mut map: HashMap<String, u32> = HashMap::new();
+
         for offset in offsets {
             if offset == -1 {
                 textures.push(Texture {
@@ -428,6 +511,7 @@ impl Level {
                     height: 0,
                     data: vec![],
                     palette: palette.clone(),
+                    frames: 0,
                 });
 
                 continue;
@@ -461,19 +545,40 @@ impl Level {
                 data.push(buffer);
             }
 
+            println!("Loaded texture: {:?}", name);
+
+            // keep track of animated frames count
+            if name.starts_with('+') {
+                if name.chars().nth(1).unwrap().is_ascii_digit() {
+                    let actual_name = &name[2..];
+                    let counter = map.entry(actual_name.to_string()).or_insert(0);
+                    *counter += 1;
+                }
+            }
+
             textures.push(Texture {
-                name: name,
+                name,
                 width: header.width,
                 height: header.height,
-                data: data,
+                data,
                 palette: palette.clone(),
+                frames: 0,
             });
+        }
+
+        for texture in &mut textures {
+            if texture.name.starts_with('+') {
+                let actual_name = &texture.name[2..];
+                if let Some(frames) = map.get(actual_name) {
+                    texture.frames = *frames as u8;
+                }
+            }
         }
 
         Ok(textures)
     }
 
-    fn read_entities(file: &mut File, lump: &BSPLump) -> io::Result<Vec<Entity>> {
+    fn read_entities(file: &mut File, lump: &BSPLump) -> io::Result<Vec<BSPEntity>> {
         file.seek(SeekFrom::Start(lump.offset as u64))?;
 
         let mut buffer = vec![0u8; lump.size as usize];
@@ -482,21 +587,26 @@ impl Level {
         let data = String::from_utf8_lossy(&buffer).to_string();
 
         let mut entities = Vec::new();
-        let mut entity = Entity::default();
+        let mut entity = BSPEntity::default();
 
         for line in data.lines() {
             let line = line.trim();
 
             if line == "{" {
                 // New entity starts (nothing needed here)
+                println!("{{");
+
             } else if line == "}" {
                 // Push entity and reset
                 entities.push(std::mem::take(&mut entity));
+                println!("}},");
             } else if let Some((_, rest)) = line.split_once('"') {
                 if let Some((key, rest)) = rest.split_once('"') {
                     if let Some((_, value)) = rest.split_once('"') {
                         if let Some((value, _)) = value.split_once('"') {
                             entity.properties.insert(key.to_string(), value.to_string());
+
+                            println!("{:?}: {:?},", key.to_string(), value.to_string());
                         }
                     }
                 }
@@ -509,8 +619,8 @@ impl Level {
     fn find_leaf(&self, node_index: u16, position: Vec3) -> u16 {
         let mut n = node_index;
         while n & 0x8000 == 0 {
-            let node = &self.bsp_nodes[n as usize];
-            let plane = &self.bsp_planes[node.plane_id as usize];
+            let node = &self.nodes[n as usize];
+            let plane = &self.planes[node.plane_id as usize];
 
             let distance: f32 = plane.normal.dot(position) - plane.distance;
 
@@ -531,17 +641,17 @@ impl Level {
         let mut max_u: f32 = f32::MIN;
         let mut max_v: f32 = f32::MIN;
 
-        let tex_info: &Surface = &self.texture_infos[face.texinfo_id as usize];
+        let tex_info: &Surface = &self.surfaces[face.texinfo_id as usize];
 
         for edge_list_index in face.ledge_id..(face.ledge_id + (face.ledge_num as i32)) {
-            let edge_index = self.bsp_ledges[edge_list_index as usize];
+            let edge_index = self.list_edges[edge_list_index as usize];
 
             let vertex: Vec3;
             if edge_index >= 0 {
-                let edge = &self.bsp_edges[edge_index as usize];
+                let edge = &self.edges[edge_index as usize];
                 vertex = self.vertices[edge.vertex0 as usize];
             } else {
-                let edge = &self.bsp_edges[-edge_index as usize];
+                let edge = &self.edges[-edge_index as usize];
                 vertex = self.vertices[edge.vertex1 as usize];
             }
 
@@ -560,31 +670,44 @@ impl Level {
         (min_u, min_v, max_u, max_v)
     }
 
-    fn draw_leaf(
+    fn animate_texture_coordinates(vertex: &Vec3, uv_texture: &Vec2, time: f32) -> Vec2 {
+        let frequency = 0.5;
+        let amplitude = 0.05;
+        let speed = 1.0;
+
+        let wave_x = (vertex.x * frequency + time * speed).sin();
+        let wave_y = (vertex.y * frequency + time * speed).sin();
+
+        vec2(
+            uv_texture.x + wave_x * amplitude,
+            uv_texture.y + wave_y * amplitude
+        )
+    }
+
+    fn draw_faces(
         &self,
         engine: &Engine,
         stats: &mut DebugStats,
         back_buffer: &mut BackBuffer,
-        leaf: &BSPLeaf,
-        rendered_faces: &mut Vec<u16>,
+        faces: &Vec<u16>,
         w: &Mat4,
         wvp: &Mat4
     ) {
-        stats.leafs_rendered += 1;
+        let time = engine.time().time_since_start();
 
-        let face_list_offset = leaf.lface_id;
-        let face_list_num = face_list_offset + leaf.lface_num;
+        for face_index in faces {
+            let face: &BSPFace = &self.faces[*face_index as usize];
+            let tex_info: &Surface = &self.surfaces[face.texinfo_id as usize];
+            let mut texture: &Texture = &self.textures[tex_info.texture_id as usize];
 
-        for face_list_index in face_list_offset..face_list_num {
-            let face_index: u16 = self.bsp_lfaces[face_list_index as usize];
-            if rendered_faces.contains(&face_index) {
-                continue;
+            if texture.frames > 1 {
+                let frame = ((time / 0.2) as i32) % texture.frames as i32;
+
+                let actual_name = &texture.name[2..]; // "texture"
+                let frame_name = format!("+{}{}", frame, actual_name);
+
+                texture = self.get_texture(&frame_name).expect(format!("Failed to get texture frame {:?} {:?}", frame_name, texture.frames).as_str());
             }
-            rendered_faces.push(face_index);
-
-            let face: &BSPFace = &self.bsp_faces[face_index as usize];
-            let tex_info: &Surface = &self.texture_infos[face.texinfo_id as usize];
-            let texture: &Texture = &self.textures[tex_info.texture_id as usize];
 
             // Calculate min u/v and max u/v
             let (min_u, min_v, max_u, max_v) = self.find_face_dimensions(face);
@@ -599,25 +722,43 @@ impl Level {
             let mut face_indices : Vec<u32> = Vec::new();
 
             for edge_list_index in face.ledge_id..(face.ledge_id + (face.ledge_num as i32)) {
-                let edge_index = self.bsp_ledges[edge_list_index as usize];
+                let edge_index = self.list_edges[edge_list_index as usize];
 
                 let vertex: Vec3;
                 if edge_index >= 0 {
-                    let edge = &self.bsp_edges[edge_index as usize];
+                    let edge = &self.edges[edge_index as usize];
                     vertex = self.vertices[edge.vertex0 as usize];
                 }
                 else {
-                    let edge = &self.bsp_edges[-edge_index as usize];
+                    let edge = &self.edges[-edge_index as usize];
                     vertex = self.vertices[edge.vertex1 as usize];
                 }
 
                 let u = vertex.dot(tex_info.u_axis) + tex_info.u_offset;
                 let v = vertex.dot(tex_info.v_axis) + tex_info.v_offset;
 
-                let uv_texture = vec2(
-                    u / texture.width as f32,
-                    v / texture.height as f32,
-                );
+                let is_water = texture.name.starts_with('*');
+
+                // Pick uv coordinates or warp them if this is a liquid surface
+                let uv_texture: Vec2 = if is_water {
+                    // let uv = vec2(u / texture.width as f32, v / texture.height as f32);
+                    // let uv = vec2(u, v);
+                    // let uv2 = Self::animate_texture_coordinates(&vertex, &uv, time);
+                    // vec2(uv2.x / texture.width as f32, uv2.y / texture.height as f32)
+
+                    let uv = vec2(u / texture.width as f32, v / texture.height as f32);
+                    Self::animate_texture_coordinates(&vertex, &uv, time)
+                }
+                else {
+                    vec2(u / texture.width as f32, v / texture.height as f32)
+                };
+
+                let base_light = if is_water {
+                    127
+                }
+                else {
+                    face.baselight
+                };
 
                 // pick color (light color) from the light type
                 let color: Vec4 = match face.typelight {
@@ -626,11 +767,16 @@ impl Level {
                         vec4(c, c, c, 1.0)
                     }
                     255 => {
-                        Vec3::splat(1.0 - (face.baselight as f32) / 255.0).extend(1.0)
-                        // vec4(0.0, 1.0, 0.0, 1.0)
+                        Vec3::splat(1.0 - (base_light as f32) / 255.0).extend(1.0)
+                    }
+                    32..62 => {
+                        // programmable lights
+                        vec4(0.0, 0.0, 0.0, 1.0)
                     }
                     _ => {
-                        vec4(0.0, 1.0, 0.0, 1.0)
+                        // println!("unhandled {:?}", face.typelight);
+
+                        vec4(0.0, 0.0, 0.0, 1.0)
                     }
                 };
 
@@ -675,7 +821,148 @@ impl Level {
         let c = frames[index];
 
         let level = c.saturating_sub(b'a') as f32;  // 0 to 25
-        level / 25.0
+        1.0 - level / 25.0
+    }
+
+    fn is_aabb_outside_frustum_short(frustum_planes: &[Plane; 6], bounds: &BBoxShort) -> bool {
+        for plane in frustum_planes {
+            if Plane::is_bboxshort_outside_plane(&plane, &bounds) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn is_aabb_outside_frustum(frustum_planes: &[Plane; 6], bounds: &BoundBox) -> bool {
+        for plane in frustum_planes {
+            if Plane::is_bbox_outside_plane(&plane, bounds) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    // #define	CONTENTS_EMPTY		-1
+    // #define	CONTENTS_SOLID		-2
+    // #define	CONTENTS_WATER		-3
+    // #define	CONTENTS_SLIME		-4
+    // #define	CONTENTS_LAVA		-5
+    // #define	CONTENTS_SKY		-6
+    // #define	CONTENTS_ORIGIN		-7		// removed at csg time
+    // #define	CONTENTS_CLIP		-8		// changed to contents_solid
+
+    fn plane_distance(plane: &BSPPlane, p: &Vec3) -> f32 {
+        if plane.plane_type < 3 {
+            p[plane.plane_type as usize] - plane.distance
+        }
+        else {
+            plane.normal.dot(*p) - plane.distance
+        }
+    }
+
+    fn point_contents(&self, num: i16, p: Vec3) -> i16 {
+        let mut n = num;
+        while n >= 0 {
+            let clip_node = &self.clip_nodes[n as usize];
+            let plane = &self.planes[clip_node.plane_id as usize];
+
+            let d = Self::plane_distance(&plane, &p);
+
+            n = if d < 0.0 {
+                clip_node.back
+            }
+            else {
+                clip_node.front
+            };
+        }
+
+        n
+    }
+
+    pub fn trace(&self, p1: Vec3, p2: Vec3, hit: &mut HitResult) -> bool {
+        self.trace_segment(0, 0.0, 1.0, &p1, &p2, hit)
+    }
+
+    fn trace_segment(&self, num: i16, p1f: f32, p2f: f32, p1: &Vec3, p2: &Vec3, hit: &mut HitResult) -> bool {
+        // If we reached a leaf
+        if num < 0 {
+            if num != -2 { // CONTENTS_SOLID = -2
+                hit.all_solid = false; // at least something is not solid
+            }
+            else {
+                hit.start_solid = true;
+            }
+
+            return true;
+        }
+
+        // find the distances to the plane
+        let clip_node = &self.clip_nodes[num as usize];
+        let plane = &self.planes[clip_node.plane_id as usize];
+
+        let t1 = Self::plane_distance(plane, &p1);
+        let t2 = Self::plane_distance(plane, &p2);
+
+        // if both start and end are on the same side, easy way out
+        if t1 >= 0.0 && t2 >= 0.0 {
+            return self.trace_segment(clip_node.front, p1f, p2f, p1, p2, hit);
+        }
+        else if t1 < 0.0 && t2 < 0.0 {
+            return self.trace_segment(clip_node.back, p1f, p2f, p1, p2, hit);
+        }
+
+        // calculate the fraction where we split the line in two
+        let epsilon = 0.03125; // 1/32 epsilon to keep floating point happy
+
+        let frac = if t1 < 0.0 {
+            ((t1 + epsilon) / (t1 - t2)).clamp(0.0, 1.0)
+        } else {
+            ((t1 - epsilon) / (t1 - t2)).clamp(0.0, 1.0)
+        };
+
+        // calculate the mid point
+        let midf = p1f + (p2f - p1f) * frac;
+        let mid = p1 + (p2 - p1) * frac;
+
+        // which side of the plane we start the trace from
+        let side = if t1 < 0.0 { 1 } else { 0 };
+        let children = [ clip_node.front, clip_node.back ];
+
+        // recurse into the near side check
+        if !self.trace_segment(children[side], p1f, midf, p1, &mid, hit) {
+            // if we hit something in our near recurse, trace has its impact point
+            return false;
+        }
+
+        // if we didn't find a hit yet, check if the other side is not solid, and recurse into it
+        if self.point_contents(children[side^1], mid) != -2 {
+            return self.trace_segment(children[side^1], midf, p2f, &mid, p2, hit);
+        }
+
+        // seems we never got out of solid
+        if hit.all_solid {
+            return false;
+        }
+
+        // so by now we should have our impact point
+        hit.plane = if side == 0 {
+            Plane {
+                normal: plane.normal,
+                d: plane.distance,
+            }
+        }
+        else {
+            Plane {
+                normal: plane.normal * -1.0,
+                d: plane.distance,
+            }
+        };
+
+        hit.fraction = midf;
+        hit.end_position = mid;
+
+        false
     }
 }
-
