@@ -1,5 +1,9 @@
 use crate::backbuffer::BackBuffer;
+use crate::doors::FuncDoor;
 use crate::engine::{DebugStats, Engine};
+use crate::entity;
+use crate::entity::{Entity, EntityData, InfoEntity};
+use crate::plane::Plane;
 use crate::renderer::{Texture, Vertex};
 use byteorder::{LittleEndian, ReadBytesExt};
 use glam::{ivec2, vec2, vec4, Mat4, Vec2, Vec3, Vec4};
@@ -9,7 +13,12 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use std::{io, ptr};
-use crate::plane::Plane;
+
+enum ModelType {
+    Brush,
+    Sprite,
+    Alias
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -182,7 +191,6 @@ pub struct HitResult {
 
 pub struct Level {
     models: Vec<BSPModel>,
-    entities: Vec<BSPEntity>,
     textures: Vec<Texture>,
     lightmaps: Vec<u8>,
 
@@ -206,6 +214,10 @@ pub struct Level {
     light_animations: Vec<&'static [u8]>,
 
     textures_map: HashMap<String, u16>,
+
+    entities: Vec<(EntityData, Box<dyn Entity>)>,
+
+    creators: HashMap<String, Box<dyn Fn() -> Box<dyn Entity>>>,
 }
 
 
@@ -223,7 +235,7 @@ impl Level {
         }
 
         // read bsp nodes
-        let entities = Self::read_entities(&mut file, &bsp_header.entities).expect("Failed to read entities");
+        let entities_desc = Self::read_entities(&mut file, &bsp_header.entities).expect("Failed to read entities");
         let planes: Vec<BSPPlane> = Self::read_lump(&mut file, &bsp_header.planes).expect("Failed to read BSP planes");
         let textures: Vec<Texture> = Self::read_textures(&mut file, &bsp_header.textures).expect("Failed to read textures");
         let vertices: Vec<Vec3> = Self::read_lump(&mut file, &bsp_header.vertices).expect("Failed to read vertices");
@@ -245,9 +257,7 @@ impl Level {
             textures_map.insert(texture.name.clone(), i as u16);
         }
 
-        // Self::dump_textures_as_bmp(&textures);
-
-        Ok(Self {
+        let mut level = Self {
             models,
             nodes,
             planes,
@@ -261,7 +271,7 @@ impl Level {
             surfaces: texture_infos,
             textures,
             lightmaps,
-            entities,
+            entities: Vec::new(),
             current_leaf_index: 0,
             visible_leafs: vec![],
             light_animations: vec![
@@ -279,12 +289,35 @@ impl Level {
             ],
             textures_map,
             clip_nodes,
-        })
+            creators: HashMap::new(),
+        };
+
+        level.register::<FuncDoor>("func_door");
+
+        for entity_desc in entities_desc {
+            level.create_entity(&entity_desc);
+        }
+
+        Ok(level)
     }
 
-    pub fn get_entity(&self, name: &str) -> Option<&BSPEntity> {
-        for entity in &self.entities {
-            if entity.properties.contains_key("classname") && entity.properties["classname"] == name {
+    // fn cast_entity_unchecked<T: 'static>(entity: &dyn Entity) -> &T {
+    //     entity.as_any().downcast_ref::<T>().expect("Entity is not expected type")
+    // }
+    //
+    // pub fn get_entity_of_class_name_as<T: 'static>(&self, name: &str) -> Option<&T> {
+    //     for entity in &self.entities {
+    //         if entity.class_name == name {
+    //             return Some(entity);
+    //         }
+    //     }
+    //
+    //     None
+    // }
+
+    pub fn get_entity_of_class_name(&self, name: &str) -> Option<&EntityData> {
+        for (entity, behaviour) in &self.entities {
+            if entity.class_name == name {
                 return Some(entity);
             }
         }
@@ -292,7 +325,35 @@ impl Level {
         None
     }
 
-    pub fn update_visiblity(&mut self, position: Vec3) {
+    pub fn register<T: Entity + Default + 'static>(&mut self, classname: &str) {
+        self.creators.insert(
+            classname.to_string(),
+            Box::new(|| Box::new(T::default())),
+        );
+    }
+
+    pub fn create_entity(&mut self, properties: &HashMap<String, String>) {
+        let classname = &properties["classname"];
+
+        let entity = EntityData {
+            class_name: classname.clone(),
+            origin: entity::parse_vec3(properties, "origin").unwrap_or(Vec3::ZERO),
+            angle: entity::parse_f32(properties, "angle").unwrap_or(0.0),
+            model_index: entity::parse_model(properties, "model").unwrap_or(-1),
+        };
+        let behaviour = self.creators
+            .get(classname.as_str())
+            .map(|creator| creator());
+
+        if behaviour.is_some() {
+            self.entities.push((entity, behaviour.unwrap()));
+        }
+        else {
+            self.entities.push((entity, Box::new(InfoEntity::default())));
+        }
+    }
+
+    pub fn update_visibility(&mut self, position: Vec3) {
         let current_leaf_index = self.find_leaf(0, position);
         if current_leaf_index == self.current_leaf_index || current_leaf_index == 0 {
             return;
@@ -340,14 +401,14 @@ impl Level {
 
         // Collect visible leafs
         let node = &self.nodes[0];
-        let mut visited_leafs: Vec<u16> = vec![];
-        self.traverse_bsp_tree(engine, stats, back_buffer, node, position, &frustum_planes, w, wvp, &mut drawn_faces, &mut visited_leafs);
+        let mut visible_leafs: Vec<u16> = vec![];
+        self.traverse_bsp_tree(engine, stats, back_buffer, node, position, &frustum_planes, w, wvp, &mut drawn_faces, &mut visible_leafs);
 
-        stats.leafs_rendered += visited_leafs.len() as u32;
+        stats.leafs_visible += visible_leafs.len() as u32;
 
         // Now collect faces, faces can be repeated in different leafs (AFAIK)
         let mut visible_faces: Vec<u16> = vec![];
-        for leaf_index in visited_leafs {
+        for leaf_index in visible_leafs {
             // self.draw_leaf(engine, stats, back_buffer, leaf, drawn_faces, w, wvp);
             let leaf: &BSPLeaf = &self.leafs[leaf_index as usize];
 
@@ -372,26 +433,36 @@ impl Level {
              // self.draw_leaf(engine, stats, back_buffer, &l, &frustum_planes, &mut drawn_faces, w, wvp);
         // });
 
-        // Draw all submodels
-        for model in &self.models[1..] {
-            let mut model_faces: Vec<u16> = vec![];
-
-            if Self::is_aabb_outside_frustum(&frustum_planes, &model.bound) {
-                continue;
+        // Draw entities
+        for (entity, behaviour) in &self.entities
+        {
+            let model_index = entity.model_index;
+            if model_index >= 1 {
+                let model: &BSPModel = &self.models[model_index as usize];
+                self.draw_model(model, engine, back_buffer, &frustum_planes, w, wvp, stats);
             }
-
-            stats.models_rendered += 1;
-
-            let range_start: u16 = model.face_id as u16;
-            let range_end: u16 = (model.face_id + model.face_num) as u16;
-            for face_index in range_start..range_end {
-                if !model_faces.contains(&face_index) {
-                    model_faces.push(face_index);
-                }
-            }
-
-            self.draw_faces(engine, stats, back_buffer, &model_faces, w, wvp);
         }
+    }
+
+    fn draw_model(&self, model: &BSPModel, engine: &Engine, back_buffer: &mut BackBuffer, frustum_planes: &[Plane;6], w: &Mat4, wvp: &Mat4, stats: &mut DebugStats) {
+        // Draw all submodels
+        let mut model_faces: Vec<u16> = vec![];
+
+        if Self::is_aabb_outside_frustum(&frustum_planes, &model.bound) {
+            return;
+        }
+
+        stats.models_rendered += 1;
+
+        let range_start: u16 = model.face_id as u16;
+        let range_end: u16 = (model.face_id + model.face_num) as u16;
+        for face_index in range_start..range_end {
+            if !model_faces.contains(&face_index) {
+                model_faces.push(face_index);
+            }
+        }
+
+        self.draw_faces(engine, stats, back_buffer, &model_faces, w, wvp);
     }
 
     fn traverse_bsp_tree(
@@ -578,7 +649,7 @@ impl Level {
         Ok(textures)
     }
 
-    fn read_entities(file: &mut File, lump: &BSPLump) -> io::Result<Vec<BSPEntity>> {
+    fn read_entities(file: &mut File, lump: &BSPLump) -> io::Result<Vec<HashMap<String, String>>> {
         file.seek(SeekFrom::Start(lump.offset as u64))?;
 
         let mut buffer = vec![0u8; lump.size as usize];
@@ -586,27 +657,20 @@ impl Level {
 
         let data = String::from_utf8_lossy(&buffer).to_string();
 
-        let mut entities = Vec::new();
-        let mut entity = BSPEntity::default();
+        let mut entities: Vec<HashMap<String, String>> = vec![];
+        let mut entity_desc: HashMap<String, String> = HashMap::new();
 
         for line in data.lines() {
             let line = line.trim();
 
-            if line == "{" {
-                // New entity starts (nothing needed here)
-                println!("{{");
-
-            } else if line == "}" {
-                // Push entity and reset
-                entities.push(std::mem::take(&mut entity));
-                println!("}},");
+            if line == "}" {
+                entities.push(entity_desc.clone());
+                entity_desc.clear();
             } else if let Some((_, rest)) = line.split_once('"') {
                 if let Some((key, rest)) = rest.split_once('"') {
                     if let Some((_, value)) = rest.split_once('"') {
                         if let Some((value, _)) = value.split_once('"') {
-                            entity.properties.insert(key.to_string(), value.to_string());
-
-                            println!("{:?}: {:?},", key.to_string(), value.to_string());
+                            entity_desc.insert(key.to_string(), value.to_string());
                         }
                     }
                 }

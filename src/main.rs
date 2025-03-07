@@ -8,6 +8,7 @@ mod backbuffer;
 mod rect;
 mod plane;
 mod entity;
+mod doors;
 
 use crate::color::Color;
 use crate::engine::{DebugStats, Engine};
@@ -111,22 +112,12 @@ fn main() {
 
     // load our test obj file
     // let model = Model::load("data/plane.obj").expect("Failed to load model");
-    let mut level = Level::load("maps/e1m1.bsp").expect("Failed to load level");
+    let mut level = Level::load("maps/e1m1_remaster.bsp").expect("Failed to load level");
 
-    let entity_player_start = level.get_entity("info_player_start");
-
-    let player_spawn: Vec3 = entity_player_start
-        .and_then(|e| e.get_property("origin"))
-        .map(|origin| {
-            let mut parts = origin.split_whitespace().flat_map(str::parse::<f32>);
-            vec3(parts.next().unwrap_or(0.0), parts.next().unwrap_or(0.0), parts.next().unwrap_or(0.0))
-        })
-        .unwrap_or(vec3(0.0, 0.0, 0.0));
-
-    let player_rotation: f32 = entity_player_start
-        .and_then(|e| e.get_property("angle"))
-        .map(|angle| angle.parse().unwrap())
-        .unwrap_or(0.0);
+    let info_player_start = level.get_entity_of_class_name("info_player_start");
+    let (player_spawn, player_rotation) = info_player_start
+        .map(|entity| (entity.origin, entity.angle))
+        .unwrap_or((Vec3::ZERO, 0.0));
 
     let mut settings = GameSettings {
         draw_depth: false,
@@ -174,7 +165,7 @@ fn main() {
             let wvp = proj * view * world;
 
             let player_position = camera.position;
-            level.update_visiblity(player_position);
+            level.update_visibility(player_position);
             level.draw(&engine, &mut stats, &mut buffer, player_position, &world, &view, &proj, &wvp);
         }
 

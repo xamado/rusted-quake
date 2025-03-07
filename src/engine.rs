@@ -40,7 +40,7 @@ pub struct DebugStats {
     pub pixel_overdraw: u32,
     pub pixels_failed_z_test: u32,
     pub bsp_nodes_traversed: u32,
-    pub leafs_rendered: u32,
+    pub leafs_visible: u32,
     pub faces_rendered: u32,
     pub models_rendered: u32,
 }
