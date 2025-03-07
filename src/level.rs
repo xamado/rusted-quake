@@ -1,183 +1,23 @@
 use crate::backbuffer::BackBuffer;
-use crate::doors::FuncDoor;
+use crate::bsp::{BSPClipNode, BSPEdge, BSPFace, BSPHeader, BSPLeaf, BSPLumps, BSPModel, BSPNode, BSPPlane, BSPSurface};
 use crate::engine::{DebugStats, Engine};
-use crate::entity;
-use crate::entity::{Entity, EntityData, InfoEntity};
-use crate::plane::Plane;
+use crate::entity::{Entity, EntityData, InfoEntity, SolidType};
+use crate::game::doors::FuncDoor;
+use crate::math::{BBoxShort, BoundBox, Plane};
 use crate::renderer::{Texture, Vertex};
-use byteorder::{LittleEndian, ReadBytesExt};
+use crate::{bsp, entity};
 use glam::{ivec2, vec2, vec4, Mat4, Vec2, Vec3, Vec4};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::Path;
-use std::sync::Arc;
 use std::{io, ptr};
+use crate::game::triggers::{TriggerMultiple, TriggerOnce};
 
 enum ModelType {
     Brush,
     Sprite,
     Alias
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct BoundBox {
-    pub min: Vec3, // Minimum X, Y, Z
-    pub max: Vec3, // Maximum X, Y, Z
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct BBoxShort {
-    pub min: [i16;3], // Minimum X, Y, Z
-    pub max: [i16;3], // Maximum X, Y, Z
-}
-
-#[repr(C)]
-struct BSPLump {
-    offset: u32,
-    size: u32,
-}
-
-#[repr(C)]
-struct BSPHeader {
-    version: i32,
-
-    entities: BSPLump,
-    planes: BSPLump, // Map Planes. size/sizeof(plane_t)
-
-    textures: BSPLump,
-    vertices: BSPLump,
-
-    vislist: BSPLump,
-    nodes: BSPLump,
-
-    texinfo: BSPLump,
-
-    faces: BSPLump,
-
-    lightmaps: BSPLump,
-    clipnodes: BSPLump,
-
-    leaves: BSPLump,
-
-    lface: BSPLump,
-    edges: BSPLump,
-
-    ledges: BSPLump,
-    models: BSPLump,
-}
-
-#[repr(C)]
-struct BSPModel {
-    bound: BoundBox,
-    origin: Vec3,
-    node_id0: i32,
-    node_id1: i32,
-    node_id2: i32,
-    node_id3: i32,
-    numleafs: i32,
-    face_id: i32,
-    face_num: i32,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-struct BSPNode {
-    plane_id: i32,
-    front: u16,
-    back: u16,
-    bound: BBoxShort,
-    face_id: u16,
-    face_num: u16,
-}
-
-#[repr(C)]
-struct BSPLeaf {
-    leaf_type: i32,     // type of leaf
-    vislist: i32,       //
-    bound: BBoxShort,   // bounding box
-    lface_id: u16,      // First item of the list of faces. [0,numlfaces]
-    lface_num: u16,     // Number of faces in the leaf
-    sndwater: u8,
-    sndsky: u8,
-    sndslime: u8,
-    sndlava: u8,
-}
-
-#[repr(C)]
-struct BSPPlane {
-    normal: Vec3,
-    distance: f32,
-    plane_type: u32,    // 0: Axial plane, in X
-                        // 1: Axial plane, in Y
-                        // 2: Axial plane, in Z
-                        // 3: Non axial plane, roughly toward X
-                        // 4: Non axial plane, roughly toward Y
-                        // 5: Non axial plane, roughly toward Z
-}
-
-#[repr(C)]
-struct BSPFace {
-    plane_id: u16,  // the plane in which the face lies. [0,numplanes]
-    side: u16,      // 0 = front of the plane, 1 = behind of the plane
-    ledge_id: i32,  // first edge in the list of edges [0,numledges]
-    ledge_num: u16, // number of edges in hte list of edges
-
-    texinfo_id: u16,    // index of the TextureInfo the face is part of [0,numtexinfos]
-    typelight: u8,      // type of lighting for the face
-    baselight: u8,      // 0xFF (dark) to 0x00 (bright)
-    light: [u8;2],      // additional light models
-    lightmap: i32,      // pointer inside the general light map or -1
-}
-
-#[repr(C)]
-struct BSPEdge {
-    vertex0: u16,   // index of the start vertex [0,numvertices]
-    vertex1: u16,   // index of the end vertex [0,numvertices]
-}
-
-#[repr(C)]
-struct BSPClipNode {
-    plane_id: u32,
-    front: i16,     // If positive, id of Front child node
-                    // If -2, the Front part is inside the model
-                    // If -1, the Front part is outside the model
-    back: i16,      // If positive, id of Back child node
-                    // If -2, the Back part is inside the model
-                    // If -1, the Back part is outside the model
-}
-
-#[repr(C)]
-struct Surface {
-    u_axis: Vec3,
-    u_offset: f32,
-    v_axis: Vec3,
-    v_offset: f32,
-    texture_id: u32,
-    animated: u32,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-struct TextureHeader             // Mip Texture
-{
-    name: [u8;16],           // Name of the texture.
-    width: u32,              // width of picture, must be a multiple of 8
-    height: u32,             // height of picture, must be a multiple of 8
-    offsets: [u32; 4],       // mip0 (w*h) -> mip1 (1/2) -> mip2 (1/4) -> mip4 (1/8)
-}
-
-#[derive(Debug, Default)]
-pub struct BSPEntity {
-    properties: HashMap<String, String>,
-}
-
-impl BSPEntity {
-    pub fn get_property(&self, name: &str) -> Option<&String> {
-        self.properties.get(name) // This already returns `Option<&String>`
-    }
 }
 
 #[derive(Debug, Default)]
@@ -189,6 +29,29 @@ pub struct HitResult {
     pub end_position: Vec3,
 }
 
+// #define	CONTENTS_EMPTY		-1
+// #define	CONTENTS_SOLID		-2
+// #define	CONTENTS_WATER		-3
+// #define	CONTENTS_SLIME		-4
+// #define	CONTENTS_LAVA		-5
+// #define	CONTENTS_SKY		-6
+// #define	CONTENTS_ORIGIN		-7		// removed at csg time
+// #define	CONTENTS_CLIP		-8		// changed to contents_solid
+
+const LIGHT_ANIMATIONS: [&'static [u8]; 11] = [
+    b"m", // normal
+    b"mmnmmommommnonmmonqnmmo", // Flicker 1
+    b"abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba", //Slow strong pulse
+    b"mmmmmaaaaammmmmaaaaaabcdefgabcdefg", //Candle 1
+    b"mamamamamama", //Fast Strobe
+    b"jklmnopqrstuvwxyzyxwvutsrqponmlkj", //Gentle Pulse
+    b"nmonqnmomnmomomno", //Flicker 2
+    b"mmmaaaabcdefgmmmmaaaammmaamm", //Candle 2
+    b"mmmaaammmaaammmabcdefaaaammmmabcdefmmmaaaa", //Candle 3
+    b"aaaaaaaazzzzzzzz", //Slow strobe 4
+    b"mmamammmmammamamaaamammma", //Fluorescent Flicker
+];
+
 pub struct Level {
     models: Vec<BSPModel>,
     textures: Vec<Texture>,
@@ -197,7 +60,7 @@ pub struct Level {
     vertices: Vec<Vec3>,
     edges: Vec<BSPEdge>,
     faces: Vec<BSPFace>,
-    surfaces: Vec<Surface>,
+    surfaces: Vec<BSPSurface>,
 
     planes: Vec<BSPPlane>,
     nodes: Vec<BSPNode>,
@@ -211,8 +74,6 @@ pub struct Level {
     current_leaf_index: u16,
     visible_leafs: Vec<u16>,
 
-    light_animations: Vec<&'static [u8]>,
-
     textures_map: HashMap<String, u16>,
 
     entities: Vec<(EntityData, Box<dyn Entity>)>,
@@ -220,42 +81,52 @@ pub struct Level {
     creators: HashMap<String, Box<dyn Fn() -> Box<dyn Entity>>>,
 }
 
-
 impl Level {
     pub fn load<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        // the original quake code basically copies the model_t struct for each submodel, copies the
+        // same pointers over and just updates the values that change (like face start + faces count, etc).
+        // Not only I dont like that code much (sorry John) in rust we also want to be more careful with data ownership
+
+        // I'm pretty sure this was done so all models (BSP, Alias, or Sprites) had the same representation
+        // and the engine simply treats them all the same, and can find them by name (in case of
+        // bps models I know that they start with an *)... so we'll see how we handle that once we
+        // implement alias models.
+
         let mut file = File::open(path)?;
 
         // read header
         let mut buffer = vec![0u8; size_of::<BSPHeader>()];
         file.read_exact(&mut buffer)?;
-        let bsp_header = unsafe { std::ptr::read(buffer.as_ptr() as *const BSPHeader) };
+        let bsp_header = unsafe { ptr::read(buffer.as_ptr() as *const BSPHeader) };
 
         if bsp_header.version != 29 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "unsupported bsp version"));
         }
 
         // read bsp nodes
-        let entities_desc = Self::read_entities(&mut file, &bsp_header.entities).expect("Failed to read entities");
-        let planes: Vec<BSPPlane> = Self::read_lump(&mut file, &bsp_header.planes).expect("Failed to read BSP planes");
-        let textures: Vec<Texture> = Self::read_textures(&mut file, &bsp_header.textures).expect("Failed to read textures");
-        let vertices: Vec<Vec3> = Self::read_lump(&mut file, &bsp_header.vertices).expect("Failed to read vertices");
-        let vislist: Vec<u8> = Self::read_lump(&mut file, &bsp_header.vislist).expect("Failed to read vislist");
-        let nodes: Vec<BSPNode> = Self::read_lump(&mut file, &bsp_header.nodes).expect("Failed to read BSP nodes");
-        let texture_infos: Vec<Surface> = Self::read_lump(&mut file, &bsp_header.texinfo).expect("Failed to read texture infos");
-        let faces: Vec<BSPFace> = Self::read_lump(&mut file, &bsp_header.faces).expect("Failed to read BSP faces");
-        let lightmaps: Vec<u8> = Self::read_lump(&mut file, &bsp_header.lightmaps).expect("Failed to read lightmaps");
-        let clip_nodes: Vec<BSPClipNode> = Self::read_lump(&mut file, &bsp_header.clipnodes).expect("Failed to read clip nodes");
-        let leafs: Vec<BSPLeaf> = Self::read_lump(&mut file, &bsp_header.leaves).expect("Failed to read BSP leafs");
-        let bsp_lfaces: Vec<u16> = Self::read_lump(&mut file, &bsp_header.lface).expect("Failed to read BSP list of faces");
-        let bsp_edges: Vec<BSPEdge> = Self::read_lump(&mut file, &bsp_header.edges).expect("Failed to read BSP edges");
-        let list_edges: Vec<i32> = Self::read_lump(&mut file, &bsp_header.ledges).expect("Failed to read BSP list of edges");
-        let models: Vec<BSPModel> = Self::read_lump(&mut file, &bsp_header.models).expect("bsp model load failed");
+        let entities_desc = bsp::read_entities(&mut file, &bsp_header, BSPLumps::Entities).expect("Failed to read entities");
+        let planes: Vec<BSPPlane> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::Planes).expect("Failed to read BSP planes");
+        let textures: Vec<Texture> = bsp::read_textures(&mut file, &bsp_header, BSPLumps::Textures).expect("Failed to read textures");
+        let vertices: Vec<Vec3> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::Vertices).expect("Failed to read vertices");
+        let vislist: Vec<u8> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::Visibility).expect("Failed to read vislist");
+        let nodes: Vec<BSPNode> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::Nodes).expect("Failed to read BSP nodes");
+        let texture_infos: Vec<BSPSurface> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::TexInfo).expect("Failed to read texture infos");
+        let faces: Vec<BSPFace> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::Faces).expect("Failed to read BSP faces");
+        let lightmaps: Vec<u8> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::Lighting).expect("Failed to read lightmaps");
+        let clip_nodes: Vec<BSPClipNode> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::ClipNodes).expect("Failed to read clip nodes");
+        let leafs: Vec<BSPLeaf> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::Leafs).expect("Failed to read BSP leafs");
+        let bsp_lfaces: Vec<u16> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::MarkSurfaces).expect("Failed to read BSP list of faces");
+        let bsp_edges: Vec<BSPEdge> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::Edges).expect("Failed to read BSP edges");
+        let list_edges: Vec<i32> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::SurfEdges).expect("Failed to read BSP list of edges");
+        let models: Vec<BSPModel> = bsp::read_lump(&mut file, &bsp_header, BSPLumps::Models).expect("bsp model load failed");
 
         let mut textures_map: HashMap<String, u16> = HashMap::new();
         for i in 0..textures.len() {
             let texture = &textures[i];
             textures_map.insert(texture.name.clone(), i as u16);
         }
+
+        // TODO: Maybe separate "Level" into "World" and "BrushModel" ?
 
         let mut level = Self {
             models,
@@ -274,25 +145,14 @@ impl Level {
             entities: Vec::new(),
             current_leaf_index: 0,
             visible_leafs: vec![],
-            light_animations: vec![
-                b"m", // normal
-                b"mmnmmommommnonmmonqnmmo", // Flicker 1
-                b"abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba", //Slow strong pulse
-                b"mmmmmaaaaammmmmaaaaaabcdefgabcdefg", //Candle 1
-                b"mamamamamama", //Fast Strobe
-                b"jklmnopqrstuvwxyzyxwvutsrqponmlkj", //Gentle Pulse
-                b"nmonqnmomnmomomno", //Flicker 2
-                b"mmmaaaabcdefgmmmmaaaammmaamm", //Candle 2
-                b"mmmaaammmaaammmabcdefaaaammmmabcdefmmmaaaa", //Candle 3
-                b"aaaaaaaazzzzzzzz", //Slow strobe 4
-                b"mmamammmmammamamaaamammma", //Fluorescent Flicker
-            ],
             textures_map,
             clip_nodes,
             creators: HashMap::new(),
         };
 
         level.register::<FuncDoor>("func_door");
+        level.register::<TriggerOnce>("trigger_once");
+        level.register::<TriggerMultiple>("trigger_multiple");
 
         for entity_desc in entities_desc {
             level.create_entity(&entity_desc);
@@ -301,22 +161,8 @@ impl Level {
         Ok(level)
     }
 
-    // fn cast_entity_unchecked<T: 'static>(entity: &dyn Entity) -> &T {
-    //     entity.as_any().downcast_ref::<T>().expect("Entity is not expected type")
-    // }
-    //
-    // pub fn get_entity_of_class_name_as<T: 'static>(&self, name: &str) -> Option<&T> {
-    //     for entity in &self.entities {
-    //         if entity.class_name == name {
-    //             return Some(entity);
-    //         }
-    //     }
-    //
-    //     None
-    // }
-
     pub fn get_entity_of_class_name(&self, name: &str) -> Option<&EntityData> {
-        for (entity, behaviour) in &self.entities {
+        for (entity, _behaviour) in &self.entities {
             if entity.class_name == name {
                 return Some(entity);
             }
@@ -333,20 +179,28 @@ impl Level {
     }
 
     pub fn create_entity(&mut self, properties: &HashMap<String, String>) {
-        let classname = &properties["classname"];
+        let class_name = &properties["classname"];
 
-        let entity = EntityData {
-            class_name: classname.clone(),
+        if class_name == "light" { // ignore lights for now
+            return;
+        }
+
+        let mut entity = EntityData {
+            class_name: class_name.clone(),
             origin: entity::parse_vec3(properties, "origin").unwrap_or(Vec3::ZERO),
+            solid: SolidType::Not,
             angle: entity::parse_f32(properties, "angle").unwrap_or(0.0),
             model_index: entity::parse_model(properties, "model").unwrap_or(-1),
         };
         let behaviour = self.creators
-            .get(classname.as_str())
+            .get(class_name.as_str())
             .map(|creator| creator());
 
-        if behaviour.is_some() {
-            self.entities.push((entity, behaviour.unwrap()));
+        println!("Created entity: {:?}", class_name);
+
+        if let Some(mut behaviour) = behaviour {
+            behaviour.construct(&mut entity);
+            self.entities.push((entity, behaviour));
         }
         else {
             self.entities.push((entity, Box::new(InfoEntity::default())));
@@ -434,12 +288,14 @@ impl Level {
         // });
 
         // Draw entities
-        for (entity, behaviour) in &self.entities
+        for (entity, _behaviour) in &self.entities
         {
-            let model_index = entity.model_index;
-            if model_index >= 1 {
-                let model: &BSPModel = &self.models[model_index as usize];
-                self.draw_model(model, engine, back_buffer, &frustum_planes, w, wvp, stats);
+            if entity.solid != SolidType::Trigger {
+                let model_index = entity.model_index;
+                if model_index >= 1 {
+                    let model: &BSPModel = &self.models[model_index as usize];
+                    self.draw_model(model, engine, back_buffer, &frustum_planes, w, wvp, stats);
+                }
             }
         }
     }
@@ -516,169 +372,10 @@ impl Level {
         }
     }
 
-    fn read_lump<T>(file: &mut File, lump: &BSPLump) -> io::Result<Vec<T>> {
-        assert!(size_of::<T>() > 0, "Cannot read a zero-sized type");
-        assert!(align_of::<T>() <= 8, "Struct alignment too large for direct reading");
-
-        file.seek(SeekFrom::Start(lump.offset as u64))?;
-
-        let mut buffer = vec![0u8; lump.size as usize];
-        file.read_exact(&mut buffer)?;
-
-        let struct_size = size_of::<T>();
-        let count = lump.size as usize / struct_size;
-
-        let structs: Vec<T> = unsafe {
-            let ptr = buffer.as_ptr() as *mut T;
-            Vec::from_raw_parts(ptr, count, count)
-        };
-
-        std::mem::forget(buffer);
-
-        Ok(structs)
-    }
-
-    fn read_palette() -> io::Result<[u32;256]> {
-        let mut file = File::open("data/palette.lmp")?;
-        let mut buffer = vec![0u8; 256 * 3];
-        file.read_exact(&mut buffer)?;
-
-        let mut palette = [0u32; 256];
-        for i in 0..256 {
-            let r = buffer[i * 3] as u32;
-            let g = buffer[i * 3 + 1] as u32;
-            let b = buffer[i * 3 + 2] as u32;
-            let a = 255;
-            palette[i] = (a << 24) | (r << 16) | (g << 8) | b;
-        }
-
-        Ok(palette)
-    }
-
     fn get_texture(&self, name: &String) -> Option<&Texture> {
         self.textures_map.get(name).and_then(|&index| self.textures.get(index as usize))
     }
 
-    fn read_textures(file: &mut File, lump: &BSPLump) -> io::Result<Vec<Texture>> {
-        // read palette
-        let palette = Arc::new(Self::read_palette()?);
-
-        let mut textures: Vec<Texture> = vec![];
-
-        file.seek(SeekFrom::Start(lump.offset as u64))?;
-
-        let num_textures: i32 = file.read_i32::<LittleEndian>()?;
-
-        let mut offsets = vec![0i32; num_textures as usize];
-        file.read_i32_into::<LittleEndian>(&mut offsets)?;
-
-        let mut map: HashMap<String, u32> = HashMap::new();
-
-        for offset in offsets {
-            if offset == -1 {
-                textures.push(Texture {
-                    name: "null".to_string(),
-                    width: 0,
-                    height: 0,
-                    data: vec![],
-                    palette: palette.clone(),
-                    frames: 0,
-                });
-
-                continue;
-            }
-
-            let texture_header_offset = lump.offset as u64 + offset as u64;
-            file.seek(SeekFrom::Start(texture_header_offset))?;
-
-            let mut buffer = [0u8; size_of::<TextureHeader>()];
-            file.read_exact(&mut buffer)?;
-
-            let header: TextureHeader = unsafe {
-                ptr::read_unaligned(buffer.as_ptr() as *const _)
-            };
-
-            let end = header.name.iter().position(|&b| b == 0).unwrap_or(header.name.len());
-            let name = std::str::from_utf8(&header.name[..end])
-                .unwrap_or("Invalid UTF-8")
-                .to_string(); // Convert to owned String
-
-            let mut data = vec![];
-            for i in 0..4 {
-                let mip_data_offset = texture_header_offset + header.offsets[i] as u64;
-                file.seek(SeekFrom::Start(mip_data_offset))?;
-                let w = header.width >> i;
-                let h = header.height >> i;
-
-                let mut buffer = vec![0u8; (w * h) as usize];
-                file.read_exact(&mut buffer)?;
-
-                data.push(buffer);
-            }
-
-            println!("Loaded texture: {:?}", name);
-
-            // keep track of animated frames count
-            if name.starts_with('+') {
-                if name.chars().nth(1).unwrap().is_ascii_digit() {
-                    let actual_name = &name[2..];
-                    let counter = map.entry(actual_name.to_string()).or_insert(0);
-                    *counter += 1;
-                }
-            }
-
-            textures.push(Texture {
-                name,
-                width: header.width,
-                height: header.height,
-                data,
-                palette: palette.clone(),
-                frames: 0,
-            });
-        }
-
-        for texture in &mut textures {
-            if texture.name.starts_with('+') {
-                let actual_name = &texture.name[2..];
-                if let Some(frames) = map.get(actual_name) {
-                    texture.frames = *frames as u8;
-                }
-            }
-        }
-
-        Ok(textures)
-    }
-
-    fn read_entities(file: &mut File, lump: &BSPLump) -> io::Result<Vec<HashMap<String, String>>> {
-        file.seek(SeekFrom::Start(lump.offset as u64))?;
-
-        let mut buffer = vec![0u8; lump.size as usize];
-        file.read_exact(&mut buffer)?;
-
-        let data = String::from_utf8_lossy(&buffer).to_string();
-
-        let mut entities: Vec<HashMap<String, String>> = vec![];
-        let mut entity_desc: HashMap<String, String> = HashMap::new();
-
-        for line in data.lines() {
-            let line = line.trim();
-
-            if line == "}" {
-                entities.push(entity_desc.clone());
-                entity_desc.clear();
-            } else if let Some((_, rest)) = line.split_once('"') {
-                if let Some((key, rest)) = rest.split_once('"') {
-                    if let Some((_, value)) = rest.split_once('"') {
-                        if let Some((value, _)) = value.split_once('"') {
-                            entity_desc.insert(key.to_string(), value.to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(entities)
-    }
 
     fn find_leaf(&self, node_index: u16, position: Vec3) -> u16 {
         let mut n = node_index;
@@ -705,7 +402,7 @@ impl Level {
         let mut max_u: f32 = f32::MIN;
         let mut max_v: f32 = f32::MIN;
 
-        let tex_info: &Surface = &self.surfaces[face.texinfo_id as usize];
+        let tex_info: &BSPSurface = &self.surfaces[face.texinfo_id as usize];
 
         for edge_list_index in face.ledge_id..(face.ledge_id + (face.ledge_num as i32)) {
             let edge_index = self.list_edges[edge_list_index as usize];
@@ -761,7 +458,7 @@ impl Level {
 
         for face_index in faces {
             let face: &BSPFace = &self.faces[*face_index as usize];
-            let tex_info: &Surface = &self.surfaces[face.texinfo_id as usize];
+            let tex_info: &BSPSurface = &self.surfaces[face.texinfo_id as usize];
             let mut texture: &Texture = &self.textures[tex_info.texture_id as usize];
 
             if texture.frames > 1 {
@@ -879,7 +576,7 @@ impl Level {
     }
 
     fn get_light_intensity(&self, elapsed_time: f32, light_type: u8) -> f32 {
-        let frames = self.light_animations[light_type as usize];
+        let frames = LIGHT_ANIMATIONS[light_type as usize];
 
         let index = (elapsed_time / 0.1) as usize % frames.len();
         let c = frames[index];
@@ -907,15 +604,6 @@ impl Level {
 
         false
     }
-
-    // #define	CONTENTS_EMPTY		-1
-    // #define	CONTENTS_SOLID		-2
-    // #define	CONTENTS_WATER		-3
-    // #define	CONTENTS_SLIME		-4
-    // #define	CONTENTS_LAVA		-5
-    // #define	CONTENTS_SKY		-6
-    // #define	CONTENTS_ORIGIN		-7		// removed at csg time
-    // #define	CONTENTS_CLIP		-8		// changed to contents_solid
 
     fn plane_distance(plane: &BSPPlane, p: &Vec3) -> f32 {
         if plane.plane_type < 3 {

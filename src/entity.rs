@@ -1,15 +1,27 @@
 use glam::{vec3, Vec3};
 use std::collections::HashMap;
 
+#[derive(PartialEq)]
+pub enum SolidType {
+    Not,
+    Trigger,
+    BoundingBox,
+    SlideBox,
+    BSP,
+}
+
 pub struct EntityData {
-    pub class_name: String,
     pub origin: Vec3,
+    pub solid: SolidType,
     pub angle: f32,
     pub model_index: i32,
+    pub class_name: String,
 }
 
 pub trait Entity {
-    fn think(&mut self, data: &mut EntityData) {}
+    fn construct(&mut self, _data: &mut EntityData) {}
+    
+    fn think(&mut self, _data: &mut EntityData) {}
 }
 
 #[derive(Default)]

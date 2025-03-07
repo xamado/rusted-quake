@@ -1,16 +1,14 @@
 mod model;
 mod level;
 mod camera;
-mod color;
 mod renderer;
 mod engine;
 mod backbuffer;
-mod rect;
-mod plane;
+mod math;
 mod entity;
-mod doors;
+mod bsp;
+mod game;
 
-use crate::color::Color;
 use crate::engine::{DebugStats, Engine};
 use crate::level::Level;
 use crate::renderer::{Renderer, RendererSettings};
@@ -21,6 +19,7 @@ use camera::Camera;
 use glam::{vec2, vec3, Mat4, Quat, Vec3};
 use minifb::{Key, Scale, Window, WindowOptions};
 use minifb_fonts::font6x8;
+use crate::math::Color;
 
 const SCREEN_WIDTH: u32 = 1920/2;
 const SCREEN_HEIGHT: u32 = 1080/2;

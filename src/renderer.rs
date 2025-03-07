@@ -1,9 +1,8 @@
 use crate::backbuffer::BackBuffer;
-use crate::color::Color;
 use crate::engine::DebugStats;
-use crate::rect::IRect;
 use glam::{ivec2, vec3, vec4, IVec2, Mat4, Vec2, Vec3, Vec4, Vec4Swizzles};
 use std::sync::Arc;
+use crate::math::{Color, IRect};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Vertex {

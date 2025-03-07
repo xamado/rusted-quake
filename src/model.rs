@@ -12,7 +12,7 @@ pub struct Model {
 }
 
 impl Model {
-    pub(crate) fn load<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
 
@@ -64,6 +64,7 @@ impl Model {
         Ok(Self { vertices, indices })
     }
 
+    #[allow(unused_variables)]
     fn draw(model: &Model, w: &Mat4, wvp: &Mat4, renderer: &mut Renderer) {
         // for tri in model.indices.chunks_exact(3) {
         //     let mut vertices: [Vertex; 3] = [Vertex::default(); 3];
