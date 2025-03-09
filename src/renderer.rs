@@ -46,9 +46,9 @@ pub struct VertexOutput {
     world_position: Vec3,
 }
 
+#[allow(dead_code)]
 pub struct RendererSettings {
     pub naive_rasterization: bool,
-    pub tile_size: i32,
     pub wireframe: bool,
 }
 
@@ -56,7 +56,6 @@ impl Default for RendererSettings {
     fn default() -> Self {
         Self {
             naive_rasterization: false,
-            tile_size: 16,
             wireframe: false,
         }
     }
@@ -78,6 +77,7 @@ impl Renderer {
         buffer.get_depth_buffer().fill(1.0);
     }
 
+    #[allow(dead_code)]
     pub fn get_settings(&self) -> &RendererSettings { &self.settings }
 
     // The Vertex Shader Stage is responsible for transforming the object space vertices
@@ -397,6 +397,7 @@ impl Renderer {
         Color::from_u32(texture.palette[indexed_color as usize])
     }
 
+    #[allow(dead_code)]
     fn sample_lightmap_point(data: &[u8], size: &IVec2, uv: &Vec2) -> u8 {
         let coords = ivec2(
             (uv.x * (size.x - 1) as f32) as i32,

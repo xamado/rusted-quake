@@ -39,25 +39,11 @@ pub struct BSPHeader {
     pub lumps: [BSPLump; BSPLumps::MaxLumps as usize],
 }
 
-#[derive(Debug, Default)]
-pub struct BSPEntity {
-    properties: HashMap<String, String>,
-}
-
-impl BSPEntity {
-    pub fn get_property(&self, name: &str) -> Option<&String> {
-        self.properties.get(name) // This already returns `Option<&String>`
-    }
-}
-
 #[repr(C)]
 pub struct BSPModel {
     pub bound: BoundBox,
     pub origin: Vec3,
-    pub node_id0: i32,
-    pub node_id1: i32,
-    pub node_id2: i32,
-    pub node_id3: i32,
+    pub head_node: [i32; 4],
     pub numleafs: i32,
     pub face_id: i32,
     pub face_num: i32,

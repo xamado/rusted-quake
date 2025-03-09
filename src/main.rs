@@ -15,11 +15,11 @@ use crate::renderer::{Renderer, RendererSettings};
 
 use crate::backbuffer::BackBuffer;
 use crate::camera::CameraSettings;
+use crate::math::Color;
 use camera::Camera;
 use glam::{vec2, vec3, Mat4, Quat, Vec3};
 use minifb::{Key, Scale, Window, WindowOptions};
 use minifb_fonts::font6x8;
-use crate::math::Color;
 
 const SCREEN_WIDTH: u32 = 1920/2;
 const SCREEN_HEIGHT: u32 = 1080/2;
@@ -83,7 +83,6 @@ fn main() {
     // create our renderer
     let renderer = Renderer::new(RendererSettings {
         naive_rasterization: true,
-        tile_size: 16,
         wireframe: false,
         ..RendererSettings::default()
     });

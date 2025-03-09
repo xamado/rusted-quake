@@ -1,6 +1,6 @@
-use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3, Vec4};
 use crate::engine::Engine;
 use crate::level::{HitResult, Level};
+use glam::{vec2, vec3, Mat4, Quat, Vec2, Vec3, Vec4};
 
 #[derive(Default)]
 pub struct CameraSettings {
@@ -55,10 +55,6 @@ impl Camera {
     pub fn update(&mut self, engine: &Engine, level: &Level) {
         let time = engine.time().elapsed_time();
 
-        // end_position += self.forward() * self.movement.x * self.speed * time;
-        // end_position += self.left() * self.movement.y * self.speed * time;
-        // end_position += self.up() * self.movement.z * self.speed * time;
-
         let mut movement = vec3(0.0, 0.0, 0.0);
         movement += self.forward() * self.movement.x * self.speed * time;
         movement += self.left() * self.movement.y * self.speed * time;
@@ -67,21 +63,30 @@ impl Camera {
         self.yaw += self.look.x * self.rotation_speed * time;
         self.pitch += self.look.y * self.rotation_speed * time;
 
-        // let hit = level.collide(&end_position);
-        // if hit == -1 {
-        //     self.position = end_position;
+        let mut hit: HitResult = HitResult::default();
+        // while !level.trace(self.position, self.position + movement, &mut hit) {
+        //     // adjust to slide against wall
+        //     let d = movement.dot(hit.plane.normal);
+        //     movement = movement - hit.plane.normal * d;
         // }
 
-        let mut hit: HitResult = HitResult::default();
-        while !level.trace(self.position, self.position + movement, &mut hit) {
-            // adjust to slide against wall
+        // get world hull 1
+        let hull = level.get_hull(0, 1);
+        let start = self.position;
+        let mut end = self.position + movement;
+
+        while !Level::recursive_hull_check(&hull, hull.first_clip_node, 0.0, 1.0, &start, &end, &mut hit) {
+            if hit.all_solid {
+                hit.start_solid = true;
+            }
+            if hit.start_solid {
+                hit.fraction = 0.0;
+            }
+
             let d = movement.dot(hit.plane.normal);
             movement = movement - hit.plane.normal * d;
 
-            // check again
-            // if !level.trace(0, 0.0, 1.0, self.position, self.position + movement, &mut hit) {
-            //     movement = Vec3::ZERO;
-            // }
+            end = self.position + movement;
         }
 
         self.position = self.position + movement;

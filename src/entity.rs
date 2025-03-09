@@ -10,12 +10,28 @@ pub enum SolidType {
     BSP,
 }
 
+#[derive(PartialEq)]
+pub enum MoveType {
+    None,
+    AngleNoClip,
+    AngleClip,
+    Walk,
+    Step,
+    Fly,
+    Toss,
+    Push,
+    NoClip,
+    FlyMissile,
+    Bounce,
+}
+
 pub struct EntityData {
     pub origin: Vec3,
     pub solid: SolidType,
     pub angle: f32,
     pub model_index: i32,
     pub class_name: String,
+    pub move_type: MoveType,
 }
 
 pub trait Entity {
